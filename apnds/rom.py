@@ -1,6 +1,7 @@
 
 from enum import IntEnum
-from typing import Literal
+from queue import SimpleQueue
+from typing import Tuple
 
 class HeaderField(IntEnum):
     TITLE = 0x000
@@ -141,10 +142,47 @@ class Header:
         if key == HeaderField.ENTIRE_HEADER:
             return int.from_bytes(self.data, 'little')
         else:
-            return int.from_bytes(self.data[key:key.succ()], 'little')
+            return int.from_bytes(self[key], 'little')
+
+    def get_rom_region(self, rom: bytes, offset: HeaderField, length: HeaderField) -> bytes:
+        off = self.get_le(offset)
+        return rom[off:off + self.get_le(length)]
 
 def get_files(header: Header, rom: bytes) -> list[bytes]:
-    fatb_romoff: int = header.get_le(HeaderField.FATB_ROMOFFSET)
-    fatb = rom[fatb_romoff:fatb_romoff + header.get_le(HeaderField.FATB_BSIZE)]
+    fatb = header.get_rom_region(rom, HeaderField.FATB_ROMOFFSET, HeaderField.FATB_BSIZE)
     fatb_ints = [int.from_bytes(fatb[i:i + 4], 'little') for i in range(0, len(fatb), 4)]
     return [rom[fatb_ints[i]:fatb_ints[i + 1]] for i in range(0, len(fatb_ints), 2)]
+
+def get_filename_id_map(header: Header, rom: bytes) -> dict[bytes, int]:
+    fntb = header.get_rom_region(rom, HeaderField.FNTB_ROMOFFSET, HeaderField.FNTB_BSIZE)
+
+    # returns (contents offset, id of first file child, id of parent dir).
+    # (these ids are of different types)
+    def dir_entry(i: int) -> Tuple[int, int, int]:
+        entry = fntb[i * 8:(i + 1) * 8]
+        return (int.from_bytes(entry[:4], 'little'), int.from_bytes(entry[4:6], 'little'), int.from_bytes(entry[6:8], 'little'))
+
+    ret = {}
+    dir_queue: SimpleQueue[Tuple[int, bytes]] = SimpleQueue()
+    # queue is (dir id, dir path)
+    dir_queue.put((0, b''))
+
+    while not dir_queue.empty():
+        dir_id, dir_path = dir_queue.get()
+        contents_off, file_id, _ = dir_entry(dir_id)
+
+        while fntb[contents_off] != 0:
+            is_dir = fntb[contents_off] & 0x80 != 0
+            name_len = fntb[contents_off] & 0x7F
+            contents_off += 1
+            path = dir_path + b'/' + fntb[contents_off:contents_off + name_len]
+            contents_off += name_len
+            if is_dir:
+                dir_id = 0xFFF & int.from_bytes(fntb[contents_off:contents_off + 2], 'little')
+                dir_queue.put((dir_id, path))
+                contents_off += 2
+            else:
+                ret[path] = file_id
+                file_id += 1
+
+    return ret
