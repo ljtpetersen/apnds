@@ -281,11 +281,10 @@ def get_files(header: Header, rom: bytes) -> Tuple[MutableSequence[bytes], Seque
     order = sorted(range(len(fatb) // 8), key=lambda i : fatb_ints[2 * i])
     return (files, order)
 
-def get_filename_id_map(header: Header, rom: bytes) -> MutableMapping[str, int]:
+def get_filename_id_map(fntb: bytes) -> MutableMapping[str, int]:
     """
     Given a header and ROM, return a mapping from file paths to file IDs (in the FAT).
     """
-    fntb = header.get_rom_region(rom, HeaderField.FNTB_ROMOFFSET, HeaderField.FNTB_BSIZE)
 
     ret = {}
     dir_queue: SimpleQueue[Tuple[int, str]] = SimpleQueue()
@@ -392,10 +391,8 @@ def construct_fntb(filenames: Iterable[str], file_id_off: int) -> Tuple[bytes, M
     dir_map: MutableMapping[Tuple[str, ...], Tuple[int, MutableSequence[Tuple[str, int | None]]]] = {}
     dir_map[()] = (0xF000, [])
 
-    # this does two things. First, it is case-insensitive. Second, it
-    # makes files in subdirectories come after. So, a/c is before a/b/c.
     def path_key_for_sorted(pk: Tuple[str, ...]) -> Tuple[str, ...]:
-        return (*map(str.lower, pk[:-1]), '\0' + pk[-1].lower())
+        return (*pk[:-1], '\0' + pk[-1])
 
     paths = sorted(map(path_key, filenames), key=path_key_for_sorted)
 
@@ -471,9 +468,6 @@ class Rom:
     arm7_overlays: MutableSequence[Overlay]
     """
     These are the ARM7 overlays of the ROM.
-
-    With filenames, there can potentially be issues if inconsistent capitalization is used within the same prefix.
-    For example, `/Applications/file` vs `/applications/other_file`.
     """
     files: MutableMapping[str, bytes]
     """
@@ -500,7 +494,8 @@ class Rom:
         """
         header = Header(rom[:HeaderField.ENTIRE_HEADER])
         (file_seq, file_id_order) = get_files(header, rom)
-        filename_id_map = get_filename_id_map(header, rom)
+        fntb = header.get_rom_region(rom, HeaderField.FNTB_ROMOFFSET, HeaderField.FNTB_BSIZE)
+        filename_id_map = get_filename_id_map(fntb)
         arm9_ovys = get_overlays(header, rom, file_seq, "9")
         arm7_ovys = get_overlays(header, rom, file_seq, "7")
         id_filename_map = {id:name for name, id in filename_id_map.items()}
