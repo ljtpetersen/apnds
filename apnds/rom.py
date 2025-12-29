@@ -535,6 +535,8 @@ class Rom:
         """
         if len(fill_with) != 1:
             raise ValueError(f"fill_with has length greater than 1")
+        if set(self.files.keys()) != set(self.file_order):
+            raise ValueError(f"not all keys of files are in file order, or some members of file order are not in file keys")
 
         ovt9, ovys9 = construct_overlay_table(self.arm9_overlays)
         ovt7, ovys7 = construct_overlay_table(self.arm7_overlays, len(ovys9))
@@ -565,6 +567,13 @@ class Rom:
         else:
             header[HeaderField.ARM9_LOADSIZE] = len(self.arm9)
 
+        def size_after_padding(size: int) -> int:
+            return size + (-size & (ROM_ALIGN - 1))
+
+        def pad_bytes(data: bytes) -> bytes:
+            padding = -len(data) & (ROM_ALIGN - 1)
+            return data + fill_with * padding
+
         def write_ovs(which: Literal["9"] | Literal["7"]) -> None:
             nonlocal post_header_bytes
             nonlocal fatb_i
@@ -576,12 +585,13 @@ class Rom:
             post_header_bytes += ovt
             align_post_header_bytes()
 
-            for ovy in ovys9 if which == "9" else ovys7:
-                coff = cur_off()
+            coff = cur_off()
+            ovys = ovys9 if which == "9" else ovys7
+            for ovy in ovys:
                 pack_into("<2I", fatb, fatb_i, coff, coff + len(ovy))
                 fatb_i += 8
-                post_header_bytes += ovy
-                align_post_header_bytes()
+                coff += size_after_padding(len(ovy))
+            post_header_bytes += b''.join(pad_bytes(ovy) for ovy in ovys)
 
         write_ovs("9")
 
@@ -598,9 +608,6 @@ class Rom:
             post_header_bytes += fntb
             align_post_header_bytes()
             header[HeaderField.FNTB_BSIZE] = len(fntb)
-
-            def size_after_padding(size: int) -> int:
-                return size + (-size & (ROM_ALIGN - 1))
 
             file_off = cur_off() + size_after_padding(len(fatb)) + size_after_padding(len(self.banner))
 
@@ -621,9 +628,10 @@ class Rom:
         post_header_bytes += self.banner
         last_padding = align_post_header_bytes()
 
-        for path in self.file_order:
-            post_header_bytes += self.files[path]
-            last_padding = align_post_header_bytes()
+        post_header_bytes += b''.join(pad_bytes(self.files[path]) for path in self.file_order)
+
+        if len(self.file_order) > 0:
+            last_padding = -len(self.files[self.file_order[-1]]) & (ROM_ALIGN - 1)
 
         if last_padding > 0:
             post_header_bytes = post_header_bytes[:-last_padding]
