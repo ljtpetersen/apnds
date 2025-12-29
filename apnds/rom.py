@@ -13,7 +13,8 @@ from typing import Literal, Tuple
 BANNER_SIZE_MAP: Mapping[int, int] = {
     1: 0x840,
     2: 0x940,
-    3: 0x1240
+    3: 0x1240,
+    0x103: 0x23C0,
 }
 
 ST_MROM = 0x51E
