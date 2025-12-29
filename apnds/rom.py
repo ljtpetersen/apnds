@@ -661,3 +661,5 @@ class Rom:
             post_header_bytes += fill_with * (tailsize - len(post_header_bytes) - HeaderField.ENTIRE_HEADER)
 
         return bytes(header.data + post_header_bytes)
+
+__all__: list[str] = ['HeaderField', 'Header', 'Overlay', 'Rom']
