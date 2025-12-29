@@ -1,7 +1,16 @@
 
+from collections.abc import Mapping, MutableMapping, MutableSequence, Sequence
+from dataclasses import dataclass
 from enum import IntEnum
 from queue import SimpleQueue
-from typing import Tuple
+from struct import unpack_from
+from typing import Literal, Tuple
+
+BANNER_SIZE_MAP: Mapping[int, int] = {
+    1: 0x840,
+    2: 0x940,
+    3: 0x1240
+}
 
 class HeaderField(IntEnum):
     TITLE = 0x000
@@ -148,34 +157,28 @@ class Header:
         off = self.get_le(offset)
         return rom[off:off + self.get_le(length)]
 
-def get_files(header: Header, rom: bytes) -> list[bytes]:
+def get_files(header: Header, rom: bytes) -> MutableSequence[bytes]:
     fatb = header.get_rom_region(rom, HeaderField.FATB_ROMOFFSET, HeaderField.FATB_BSIZE)
     fatb_ints = [int.from_bytes(fatb[i:i + 4], 'little') for i in range(0, len(fatb), 4)]
     return [rom[fatb_ints[i]:fatb_ints[i + 1]] for i in range(0, len(fatb_ints), 2)]
 
-def get_filename_id_map(header: Header, rom: bytes) -> dict[bytes, int]:
+def get_filename_id_map(header: Header, rom: bytes) -> MutableMapping[str, int]:
     fntb = header.get_rom_region(rom, HeaderField.FNTB_ROMOFFSET, HeaderField.FNTB_BSIZE)
 
-    # returns (contents offset, id of first file child, id of parent dir).
-    # (these ids are of different types)
-    def dir_entry(i: int) -> Tuple[int, int, int]:
-        entry = fntb[i * 8:(i + 1) * 8]
-        return (int.from_bytes(entry[:4], 'little'), int.from_bytes(entry[4:6], 'little'), int.from_bytes(entry[6:8], 'little'))
-
     ret = {}
-    dir_queue: SimpleQueue[Tuple[int, bytes]] = SimpleQueue()
+    dir_queue: SimpleQueue[Tuple[int, str]] = SimpleQueue()
     # queue is (dir id, dir path)
-    dir_queue.put((0, b''))
+    dir_queue.put((0, ''))
 
     while not dir_queue.empty():
         dir_id, dir_path = dir_queue.get()
-        contents_off, file_id, _ = dir_entry(dir_id)
+        contents_off, file_id = unpack_from("<IH", fntb, 8 * dir_id)
 
         while fntb[contents_off] != 0:
             is_dir = fntb[contents_off] & 0x80 != 0
             name_len = fntb[contents_off] & 0x7F
             contents_off += 1
-            path = dir_path + b'/' + fntb[contents_off:contents_off + name_len]
+            path = f"{dir_path}/{fntb[contents_off:contents_off + name_len].decode('ascii')}"
             contents_off += name_len
             if is_dir:
                 dir_id = 0xFFF & int.from_bytes(fntb[contents_off:contents_off + 2], 'little')
@@ -186,3 +189,58 @@ def get_filename_id_map(header: Header, rom: bytes) -> dict[bytes, int]:
                 file_id += 1
 
     return ret
+
+@dataclass
+class Overlay:
+    id: int
+    ram_address: int
+    ram_size: int
+    bss_size: int
+    sinit_init: int
+    sinit_init_end: int
+    reserved: int
+    data: bytes
+
+def get_overlays(header: Header, rom: bytes, files: Sequence[bytes], which: Literal["9"] | Literal["7"]) -> MutableSequence[Overlay]:
+    table = header.get_rom_region(rom, getattr(HeaderField, f"OVT{which}_ROMOFFSET"), getattr(HeaderField, f"OVT{which}_BSIZE"))
+
+    ret = []
+
+    for off in range(0, len(table), 32):
+        id, ram_address, ram_size, bss_size, sinit_init, sinit_init_end, file_id, reserved = unpack_from("<8I", table, off)
+        ret.append(Overlay(id, ram_address, ram_size, bss_size, sinit_init, sinit_init_end, reserved, files[file_id]))
+
+    
+    return ret
+
+@dataclass
+class Rom:
+    header: Header
+    arm9: bytes
+    arm7: bytes
+    arm9_overlays: MutableSequence[Overlay]
+    arm7_overlays: MutableSequence[Overlay]
+    files: MutableMapping[str, bytes]
+    banner: bytes
+
+    @staticmethod
+    def from_bytes(rom: bytes) -> "Rom":
+        header = Header(rom[:HeaderField.ENTIRE_HEADER])
+        file_seq = get_files(header, rom)
+        filename_id_map = get_filename_id_map(header, rom)
+        arm9_ovys = get_overlays(header, rom, file_seq, "9")
+        arm7_ovys = get_overlays(header, rom, file_seq, "7")
+
+        arm9_start = header.get_le(HeaderField.ARM9_ROMOFFSET)
+        arm9_len = header.get_le(HeaderField.ARM9_LOADSIZE)
+        if arm9_start + arm9_len + 12 <= len(rom) and rom[arm9_start + arm9_len:arm9_start + arm9_len + 4] == bytes.fromhex('2106C0DE'):
+            arm9_len += 12
+        arm9 = rom[arm9_start:arm9_start + arm9_len]
+
+        arm7 = header.get_rom_region(rom, HeaderField.ARM7_ROMOFFSET, HeaderField.ARM7_LOADSIZE)
+
+        banner_off = header.get_le(HeaderField.BANNER_ROMOFFSET)
+        banner_version = int.from_bytes(rom[banner_off:banner_off + 2], 'little')
+        banner = rom[banner_off:banner_off + BANNER_SIZE_MAP[banner_version]]
+
+        return Rom(header, arm9, arm7, arm9_ovys, arm7_ovys, {name:file_seq[id] for name, id in filename_id_map.items()}, banner)
