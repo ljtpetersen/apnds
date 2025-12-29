@@ -16,14 +16,8 @@ BANNER_SIZE_MAP: Mapping[int, int] = {
     3: 0x1240
 }
 
-ROM_ALIGN = 0x200
-
 ST_MROM = 0x51E
 ST_PROM = 0xD7E
-ROMCTRL_DEC_MROM = 0x586000
-ROMCTRL_ENC_MROM = 0x1808F8
-ROMCTRL_DEC_PROM = 0x416657
-ROMCTRL_ENC_PROM = 0x81808F8
 
 TRY_CAPSHIFT_BASE = 0x20000
 MAX_CAPSHIFT_PROM = 15
@@ -98,22 +92,13 @@ class HeaderField(IntEnum):
     This is computed and set automatically when converting the ROM to bytes.
     """
     ROMCTRL_DEC = 0x060
-    """
-    This is computed and set automatically when converting the ROM to bytes.
-    """
     ROMCTRL_ENC = 0x064
-    """
-    This is computed and set automatically when converting the ROM to bytes.
-    """
     BANNER_ROMOFFSET = 0x068
     """
     This is computed and set automatically when converting the ROM to bytes.
     """
     SECURECRC = 0x06C
     SECURE_DELAY = 0x06E
-    """
-    This is computed and set automatically when converting the ROM to bytes.
-    """
     ARM9_AUTOLOADCB = 0x070
     ARM7_AUTOLOADCB = 0x074
     ROMSIZE = 0x080
@@ -125,9 +110,6 @@ class HeaderField(IntEnum):
     This is computed and set automatically when converting the ROM to bytes.
     """
     STATICFOOTER = 0x088
-    """
-    This is computed and set automatically when converting the ROM to bytes.
-    """
     STATICFOOTER_END = 0x08C
     """
     This entry exists so that the STATICFOOTER entry's length is computed correctly.
@@ -295,7 +277,7 @@ def get_files(header: Header, rom: bytes) -> Tuple[MutableSequence[bytes], Seque
     fatb = header.get_rom_region(rom, HeaderField.FATB_ROMOFFSET, HeaderField.FATB_BSIZE)
     fatb_ints = [int.from_bytes(fatb[i:i + 4], 'little') for i in range(0, len(fatb), 4)]
     files = [rom[fatb_ints[i]:fatb_ints[i + 1]] for i in range(0, len(fatb_ints), 2)]
-    order = sorted(range(len(fatb) // 8), key=lambda i : unpack_from("<I", fatb, 8 * i))
+    order = sorted(range(len(fatb) // 8), key=lambda i : fatb_ints[2 * i])
     return (files, order)
 
 def get_filename_id_map(header: Header, rom: bytes) -> MutableMapping[str, int]:
@@ -504,6 +486,11 @@ class Rom:
     """
     This is the ROM's banner.
     """
+    rom_alignment: int = 0x200
+    """
+    This is the alignment used starting each block when converting the ROM to bytes.
+    It should be a power of two.
+    """
 
     @staticmethod
     def from_bytes(rom: bytes) -> "Rom":
@@ -532,7 +519,7 @@ class Rom:
 
         return Rom(header, arm9, arm7, arm9_ovys, arm7_ovys, {name:file_seq[id] for name, id in filename_id_map.items()}, file_order, banner)
 
-    def to_bytes(self, storage_type: Literal["MROM"] | Literal["PROM"] = "PROM", fill_tail: bool = True, fill_with: bytes = b'\xFF') -> bytes:
+    def to_bytes(self, fill_tail: bool = True, fill_with: bytes = b'\xFF') -> bytes:
         """
         From the components of a ROM, construct the ROM.
         """
@@ -549,15 +536,13 @@ class Rom:
         post_header_bytes = bytes()
         header = Header(bytes(self.header.data))
 
-        header[HeaderField.ROMCTRL_DEC] = ROMCTRL_DEC_MROM if storage_type == "MROM" else ROMCTRL_DEC_PROM
-        header[HeaderField.ROMCTRL_ENC] = ROMCTRL_ENC_MROM if storage_type == "MROM" else ROMCTRL_ENC_PROM
-        header[HeaderField.SECURE_DELAY] = ST_MROM if storage_type == "MROM" else ST_PROM
+        storage_type: Literal["MROM"] | Literal["PROM"] = "MROM" if header[HeaderField.SECURE_DELAY] == ST_MROM else "PROM"
 
         def cur_off() -> int:
             return len(post_header_bytes) + HeaderField.ENTIRE_HEADER
         def align_post_header_bytes() -> int:
             nonlocal post_header_bytes
-            padding_len = -len(post_header_bytes) & (ROM_ALIGN - 1)
+            padding_len = -len(post_header_bytes) & (self.rom_alignment - 1)
             post_header_bytes += fill_with * padding_len
             return padding_len
 
@@ -571,10 +556,10 @@ class Rom:
             header[HeaderField.ARM9_LOADSIZE] = len(self.arm9)
 
         def size_after_padding(size: int) -> int:
-            return size + (-size & (ROM_ALIGN - 1))
+            return size + (-size & (self.rom_alignment - 1))
 
         def pad_bytes(data: bytes) -> bytes:
-            padding = -len(data) & (ROM_ALIGN - 1)
+            padding = -len(data) & (self.rom_alignment - 1)
             return data + fill_with * padding
 
         def write_ovs(which: Literal["9"] | Literal["7"]) -> None:
@@ -634,7 +619,7 @@ class Rom:
         post_header_bytes += b''.join(pad_bytes(self.files[path]) for path in self.file_order)
 
         if len(self.file_order) > 0:
-            last_padding = -len(self.files[self.file_order[-1]]) & (ROM_ALIGN - 1)
+            last_padding = -len(self.files[self.file_order[-1]]) & (self.rom_alignment - 1)
 
         if last_padding > 0:
             post_header_bytes = post_header_bytes[:-last_padding]
@@ -656,7 +641,6 @@ class Rom:
 
         header[HeaderField.ROMSIZE] = rom_size
         header[HeaderField.HEADERSIZE] = HeaderField.ENTIRE_HEADER
-        header[HeaderField.STATICFOOTER] = 0x4BA0
 
         header[HeaderField.HEADERCRC] = crc16(bytes(header.data[:HeaderField.HEADERCRC]), 0xFFFF)
 
