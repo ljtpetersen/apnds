@@ -118,8 +118,6 @@ class Narc:
             return file + b'\0' * (-len(file) & 3)
         fimg = pack("<4sI", b'GMIF', coff + 8) + b''.join(padded_file(file) for file in self.files)
         fntb = construct_fntb_forced_ids(self.filename_id_map)
-        print(fntb.hex())
-        print(get_filename_id_map(fntb))
         fntb = pack("<4sI", b'BTNF', 8 + len(fntb)) + fntb
 
         post_header = fatb + fntb + fimg
