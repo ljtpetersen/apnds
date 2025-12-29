@@ -1,5 +1,9 @@
+# apnds/rom.py
+#
+# Copyright (C) 2025 James Petersen <m@jamespetersen.ca>
+# Licensed under MIT. See LICENSE
 
-from collections.abc import Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence, Sequence
 from dataclasses import dataclass, asdict
 from enum import IntEnum
 from queue import SimpleQueue
@@ -26,43 +30,126 @@ MAX_CAPSHIFT_PROM = 15
 MAX_CAPSHIFT_MROM = 10
 
 class HeaderField(IntEnum):
+    """
+    These are the fields of the header, and their corresponding offsets.
+    The length of each entry is the difference of its successor's offset with it.
+    """
     TITLE = 0x000
+    """
+    The title of the ROM. This should be null-terminated ASCII.
+    """
     SERIAL = 0x00C
     MAKER = 0x010
     CHIPCAPACITY = 0x014
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     REVISION = 0x01E
     ARM9_ROMOFFSET = 0x020
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     ARM9_ENTRYPOINT = 0x024
     ARM9_LOADADDR = 0x028
     ARM9_LOADSIZE = 0x02C
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     ARM7_ROMOFFSET = 0x030
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     ARM7_ENTRYPOINT = 0x034
     ARM7_LOADADDR = 0x038
     ARM7_LOADSIZE = 0x03C
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     FNTB_ROMOFFSET = 0x040
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     FNTB_BSIZE = 0x044
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     FATB_ROMOFFSET = 0x048
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     FATB_BSIZE = 0x04C
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     OVT9_ROMOFFSET = 0x050
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     OVT9_BSIZE = 0x054
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     OVT7_ROMOFFSET = 0x058
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     OVT7_BSIZE = 0x05C
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     ROMCTRL_DEC = 0x060
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     ROMCTRL_ENC = 0x064
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     BANNER_ROMOFFSET = 0x068
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     SECURECRC = 0x06C
     SECURE_DELAY = 0x06E
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     ARM9_AUTOLOADCB = 0x070
     ARM7_AUTOLOADCB = 0x074
     ROMSIZE = 0x080
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     HEADERSIZE = 0x084
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     STATICFOOTER = 0x088
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     STATICFOOTER_END = 0x08C
+    """
+    This entry exists so that the STATICFOOTER entry's length is computed correctly.
+    """
     HEADERCRC = 0x15E
+    """
+    This is computed and set automatically when converting the ROM to bytes.
+    """
     HEADERCRC_END = 0x160
+    """
+    This entry exists so that the HEADERCRC entry's length is computed correctly.
+    """
     ENTIRE_HEADER = 0x4000
+    """
+    This is the size of the entire header.
+    """
 
     def succ(self) -> "HeaderField":
+        """
+        Given a header field, this returns the subsequent header field.
+        For ENTIRE_HEADER, it returns ENTIRE_HEADER.
+        """
         match self:
             case HeaderField.TITLE:
                 return HeaderField.SERIAL
@@ -136,26 +223,46 @@ class HeaderField(IntEnum):
                 return HeaderField.ENTIRE_HEADER
 
     def len(self) -> int:
+        """
+        This is the length of this header field, computed by `self.succ() - self`.
+        """
         if self == HeaderField.ENTIRE_HEADER:
             return self
         else:
             return self.succ() - self
 
 class Header:
+    """
+    This is the header of a DS ROM. Its fields can be accessed using indexing notation:
+    `header[HeaderField.TITLE]` will return the title, in bytes.
+    """
     data: bytearray
+    """
+    The underlying data of the header.
+    """
 
     def __init__(self, data: bytes):
+        """
+        Initialize a header with some underlying data. The length of the data must be 0x4000 bytes.
+        """
         if len(data) != HeaderField.ENTIRE_HEADER:
             raise ValueError("header data is of incorrect length (expected 0x4000 bytes)")
         self.data = bytearray(data)
 
     def __getitem__(self, key: HeaderField) -> bytes:
+        """
+        Get a field from the header as bytes.
+        """
         if key == HeaderField.ENTIRE_HEADER:
             return bytes(self.data)
         else:
             return bytes(self.data[key:key.succ()])
     
     def __setitem__(self, key: HeaderField, value: bytes | int) -> None:
+        """
+        Set a field from the header from bytes or an integer. If an integer
+        is passed, it is interpreted as little endian.
+        """
         if isinstance(value, int):
             value = value.to_bytes(key.len(), 'little')
         if key == HeaderField.ENTIRE_HEADER:
@@ -164,16 +271,27 @@ class Header:
             self.data[key:key.succ()] = value
 
     def get_le(self, key: HeaderField) -> int:
+        """
+        Get a field from the header as an integer. It is interpreted as little endian.
+        """
         if key == HeaderField.ENTIRE_HEADER:
             return int.from_bytes(self.data, 'little')
         else:
             return int.from_bytes(self[key], 'little')
 
     def get_rom_region(self, rom: bytes, offset: HeaderField, length: HeaderField) -> bytes:
+        """
+        Given the entire ROM, the field corresponding to the offset in the ROM, and the
+        field corresponding to the binary size in the ROM, return the region in the ROM.
+        """
         off = self.get_le(offset)
         return rom[off:off + self.get_le(length)]
 
 def get_files(header: Header, rom: bytes) -> Tuple[MutableSequence[bytes], Sequence[int]]:
+    """
+    Given a header and ROM, return the sequence of files in the FAT, as bytes,
+    along with the order of these files within ROM.
+    """
     fatb = header.get_rom_region(rom, HeaderField.FATB_ROMOFFSET, HeaderField.FATB_BSIZE)
     fatb_ints = [int.from_bytes(fatb[i:i + 4], 'little') for i in range(0, len(fatb), 4)]
     files = [rom[fatb_ints[i]:fatb_ints[i + 1]] for i in range(0, len(fatb_ints), 2)]
@@ -181,6 +299,9 @@ def get_files(header: Header, rom: bytes) -> Tuple[MutableSequence[bytes], Seque
     return (files, order)
 
 def get_filename_id_map(header: Header, rom: bytes) -> MutableMapping[str, int]:
+    """
+    Given a header and ROM, return a mapping from file paths to file IDs (in the FAT).
+    """
     fntb = header.get_rom_region(rom, HeaderField.FNTB_ROMOFFSET, HeaderField.FNTB_BSIZE)
 
     ret = {}
@@ -210,16 +331,34 @@ def get_filename_id_map(header: Header, rom: bytes) -> MutableMapping[str, int]:
 
 @dataclass
 class Overlay:
+    """
+    This is a single overlay.
+    """
     id: int
+    """
+    This is the overlay's ID.
+    """
     ram_address: int
+    """
+    This is the RAM address at which the overlay is to be loaded.
+    """
     ram_size: int
+    """
+    This is the RAM size of the overlay when loaded.
+    """
     bss_size: int
     sinit_init: int
     sinit_init_end: int
     data: bytes
+    """
+    This is the data of the overlay.
+    """
     reserved: int
 
 def get_overlays(header: Header, rom: bytes, files: Sequence[bytes], which: Literal["9"] | Literal["7"]) -> MutableSequence[Overlay]:
+    """
+    Given a header, ROM, and the files in the ROM, return the overlays for either the ARM9 or ARM7 processor.
+    """
     table = header.get_rom_region(rom, getattr(HeaderField, f"OVT{which}_ROMOFFSET"), getattr(HeaderField, f"OVT{which}_BSIZE"))
 
     ret = []
@@ -231,6 +370,9 @@ def get_overlays(header: Header, rom: bytes, files: Sequence[bytes], which: Lite
     return ret
 
 def construct_overlay_table(overlays: Sequence[Overlay], file_id_off: int = 0) -> Tuple[bytes, Sequence[bytes]]:
+    """
+    Given a sequence of overlays, and a starting file ID, return the overlay table and the sequence of overlays.
+    """
     table = bytes()
     data_seq = []
     for ov in overlays:
@@ -242,12 +384,23 @@ def construct_overlay_table(overlays: Sequence[Overlay], file_id_off: int = 0) -
     return (table, data_seq)
 
 def path_key(path: str) -> Tuple:
+    """
+    The path key is the decomposition of a path `'/a/b/c'` into
+    a tuple of its components, `('a', 'b', 'c')`
+    """
     return tuple(path.split('/')[1:])
 
 def path_key_to_path(*kwargs: str) -> str:
+    """
+    This recomposes a path from its path key.
+    """
     return "/" + "/".join(kwargs)
 
-def construct_fntb(files: Mapping[str, bytes], file_id_off: int) -> Tuple[bytes, Mapping[str, int]]:
+def construct_fntb(filenames: Iterable[str], file_id_off: int) -> Tuple[bytes, Mapping[str, int]]:
+    """
+    Given the filenames in the ROM, and the first file ID for the files, construct the FNT
+    and the mapping from filenames to file IDs.
+    """
     header = bytes()
     contents = bytes()
 
@@ -261,7 +414,7 @@ def construct_fntb(files: Mapping[str, bytes], file_id_off: int) -> Tuple[bytes,
     def path_key_for_sorted(pk: Tuple[str, ...]) -> Tuple[str, ...]:
         return (*map(str.lower, pk[:-1]), '\0' + pk[-1].lower())
 
-    paths = sorted(map(path_key, files), key=path_key_for_sorted)
+    paths = sorted(map(path_key, filenames), key=path_key_for_sorted)
 
     for pk in paths:
         parent_dir = pk[:-1]
@@ -296,6 +449,9 @@ def construct_fntb(files: Mapping[str, bytes], file_id_off: int) -> Tuple[bytes,
 CRC_TABLE: Sequence[int] = [0, 0xCC01, 0xD801, 0x1400, 0xF001, 0x3C00, 0x2800, 0xE401, 0xA001, 0x6C00, 0x7800, 0xB401, 0x5000, 0x9C01, 0x8801, 0x4400]
 
 def crc16(data: bytes, crc: int) -> int:
+    """
+    Compute the 16-bit CRC value for some bytes.
+    """
     bit = 0
 
     for i in range(0, len(data), 2):
@@ -310,17 +466,47 @@ def crc16(data: bytes, crc: int) -> int:
 
 @dataclass
 class Rom:
+    """
+    This is the decomposition of a DS ROM into its parts.
+    """
     header: Header
+    """
+    This is the header of the ROM.
+    """
     arm9: bytes
+    """
+    This is the ARM9 code of the ROM.
+    """
     arm7: bytes
+    """
+    This is the ARM7 code of the ROM.
+    """
     arm9_overlays: MutableSequence[Overlay]
+    """
+    These are the ARM9 overlays of the ROM.
+    """
     arm7_overlays: MutableSequence[Overlay]
+    """
+    These are the ARM7 overlays of the ROM.
+    """
     files: MutableMapping[str, bytes]
+    """
+    This is the mapping of file paths to files in the ROM.
+    """
     file_order: MutableSequence[str]
+    """
+    This is the physical order the files are located in the ROM, by path.
+    """
     banner: bytes
+    """
+    This is the ROM's banner.
+    """
 
     @staticmethod
     def from_bytes(rom: bytes) -> "Rom":
+        """
+        Decompose a ROM into its components.
+        """
         header = Header(rom[:HeaderField.ENTIRE_HEADER])
         (file_seq, file_id_order) = get_files(header, rom)
         filename_id_map = get_filename_id_map(header, rom)
@@ -344,6 +530,9 @@ class Rom:
         return Rom(header, arm9, arm7, arm9_ovys, arm7_ovys, {name:file_seq[id] for name, id in filename_id_map.items()}, file_order, banner)
 
     def to_bytes(self, storage_type: Literal["MROM"] | Literal["PROM"] = "PROM", fill_tail: bool = True, fill_with: bytes = b'\xFF') -> bytes:
+        """
+        From the components of a ROM, construct the ROM.
+        """
         if len(fill_with) != 1:
             raise ValueError(f"fill_with has length greater than 1")
 
@@ -403,7 +592,7 @@ class Rom:
         write_ovs("7")
 
         if len(self.files) > 0:
-            (fntb, filename_id_map) = construct_fntb(self.files, len(ovys9) + len(ovys7))
+            (fntb, filename_id_map) = construct_fntb(self.files.keys(), len(ovys9) + len(ovys7))
 
             header[HeaderField.FNTB_ROMOFFSET] = cur_off()
             post_header_bytes += fntb
