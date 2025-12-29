@@ -488,6 +488,9 @@ class Rom:
     arm7_overlays: MutableSequence[Overlay]
     """
     These are the ARM7 overlays of the ROM.
+
+    With filenames, there can potentially be issues if inconsistent capitalization is used within the same prefix.
+    For example, `/Applications/file` vs `/applications/other_file`.
     """
     files: MutableMapping[str, bytes]
     """
