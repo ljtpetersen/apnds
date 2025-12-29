@@ -137,9 +137,3 @@ def compress(data: bytes, min_distance: int = 2, forward_iteration: bool = True,
                             dest_pos += 1
 
                 return bytes(ret[:dest_pos])
-
-if __name__ == "__main__":
-    with open("00002.NCGR", "rb") as f:
-        data = f.read()
-    with open("00002.NCGR.lz", "wb") as f:
-        f.write(compress(data, pad=False))
