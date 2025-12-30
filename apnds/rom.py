@@ -585,6 +585,9 @@ class Rom:
         header[HeaderField.ARM7_LOADSIZE] = len(self.arm7)
         write_ovs("7")
 
+        files_in_order = frozenset(self.file_order)
+        self.file_order.extend(filename for filename in self.files if filename not in files_in_order)
+
         if len(self.files) > 0:
             (fntb, filename_id_map) = construct_fntb(self.files.keys(), len(ovys9) + len(ovys7))
 
