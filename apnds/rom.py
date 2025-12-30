@@ -6,6 +6,7 @@
 from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence, Sequence
 from dataclasses import dataclass, asdict
 from enum import IntEnum
+from itertools import chain
 from queue import SimpleQueue
 from struct import pack, pack_into, unpack_from
 from typing import Literal, Tuple
@@ -586,7 +587,7 @@ class Rom:
         write_ovs("7")
 
         files_in_order = frozenset(self.file_order)
-        self.file_order.extend(filename for filename in self.files if filename not in files_in_order)
+        file_order = list(chain(self.file_order, (filename for filename in self.files if filename not in files_in_order)))
 
         if len(self.files) > 0:
             (fntb, filename_id_map) = construct_fntb(self.files.keys(), len(ovys9) + len(ovys7))
@@ -598,7 +599,7 @@ class Rom:
 
             file_off = cur_off() + size_after_padding(len(fatb)) + size_after_padding(len(self.banner))
 
-            for path in self.file_order:
+            for path in file_order:
                 file = self.files[path]
                 pack_into("<2I", fatb, filename_id_map[path] * 8, file_off, file_off + len(file))
                 file_off += size_after_padding(len(file))
@@ -615,10 +616,10 @@ class Rom:
         post_header_bytes += self.banner
         last_padding = align_post_header_bytes()
 
-        post_header_bytes += b''.join(pad_bytes(self.files[path]) for path in self.file_order)
+        post_header_bytes += b''.join(pad_bytes(self.files[path]) for path in file_order)
 
-        if len(self.file_order) > 0:
-            last_padding = -len(self.files[self.file_order[-1]]) & (self.rom_alignment - 1)
+        if len(file_order) > 0:
+            last_padding = -len(self.files[file_order[-1]]) & (self.rom_alignment - 1)
 
         if last_padding > 0:
             post_header_bytes = post_header_bytes[:-last_padding]
