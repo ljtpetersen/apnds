@@ -522,8 +522,6 @@ class Rom:
         """
         if len(fill_with) != 1:
             raise ValueError(f"fill_with has length greater than 1")
-        if set(self.files.keys()) != set(self.file_order):
-            raise ValueError(f"not all keys of files are in file order, or some members of file order are not in file keys")
 
         ovt9, ovys9 = construct_overlay_table(self.arm9_overlays)
         ovt7, ovys7 = construct_overlay_table(self.arm7_overlays, len(ovys9))
