@@ -1,6 +1,6 @@
 # apnds/rom.py
 #
-# Copyright (C) 2025 James Petersen <m@jamespetersen.ca>
+# Copyright (C) 2025-2026 James Petersen <m@jamespetersen.ca>
 # Licensed under MIT. See LICENSE
 
 from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence, Sequence
@@ -336,7 +336,29 @@ class Overlay:
     """
     This is the data of the overlay.
     """
-    reserved: int
+    flags: int
+    """
+    The overlay's flags.
+    """
+    compressed_size: int
+    """
+    The overlay's size when uncompressed, if it is compressed.
+    """
+
+    def table_entry_data(self) -> MutableSequence[int]:
+        return [
+            self.id,
+            self.ram_address,
+            self.ram_size,
+            self.bss_size,
+            self.sinit_init,
+            self.sinit_init_end,
+            -1,
+            (self.flags << 24) | self.compressed_size,
+        ]
+
+    def is_compressed(self) -> bool:
+        return self.flags & 1 != 0
 
 def get_overlays(header: Header, rom: bytes, files: Sequence[bytes], which: Literal["9"] | Literal["7"]) -> MutableSequence[Overlay]:
     """
@@ -347,8 +369,8 @@ def get_overlays(header: Header, rom: bytes, files: Sequence[bytes], which: Lite
     ret = []
 
     for off in range(0, len(table), 32):
-        id, ram_address, ram_size, bss_size, sinit_init, sinit_init_end, file_id, reserved = unpack_from("<8I", table, off)
-        ret.append(Overlay(id, ram_address, ram_size, bss_size, sinit_init, sinit_init_end, files[file_id], reserved))
+        id, ram_address, ram_size, bss_size, sinit_init, sinit_init_end, file_id, flags_and_uc_size = unpack_from("<8I", table, off)
+        ret.append(Overlay(id, ram_address, ram_size, bss_size, sinit_init, sinit_init_end, files[file_id], flags_and_uc_size >> 24, flags_and_uc_size & 0xFFFFFF))
 
     return ret
 
@@ -361,7 +383,7 @@ def construct_overlay_table(overlays: Sequence[Overlay], file_id_off: int = 0) -
     for ov in overlays:
         file_id = len(data_seq) + file_id_off
         data_seq.append(ov.data)
-        table_entry_data = list(asdict(ov).values())
+        table_entry_data = ov.table_entry_data()
         table_entry_data[6] = file_id
         table += pack("<8I", *table_entry_data)
     return (table, data_seq)

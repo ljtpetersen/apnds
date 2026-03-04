@@ -1,6 +1,6 @@
-# apnds/lz10.py
+# apnds/lz.py
 #
-# Copyright (C) 2025 James Petersen <m@jamespetersen.ca>
+# Copyright (C) 2025-2026 James Petersen <m@jamespetersen.ca>
 # Licensed under MIT. See LICENSE
 
 from typing import Tuple
@@ -46,6 +46,43 @@ def decompress(data: bytes) -> bytes:
             if dest_pos == len(ret):
                 return bytes(ret)
             flags <<= 1
+
+def decompress_code(code: bytes, compressed_top: int) -> Tuple[bytes, bytes]:
+    """
+    Decompress some code, given the top of the compressed code structure.
+    This function will return the full decompressed code, as well as the data that is
+    overwritten by the compressed code.
+    """
+    # this code is reverse-engineered from the decompression function
+    # present in the C runtime of many DS games.
+    rem = code[compressed_top:]
+
+    src_bot = compressed_top - int.from_bytes(code[compressed_top - 8:compressed_top - 5], 'little')
+    src_top = compressed_top - code[compressed_top - 5]
+    dest = compressed_top + int.from_bytes(code[compressed_top - 4:compressed_top], 'little')
+
+    c = bytearray(code) + bytearray(max(dest - len(code), 0))
+    while src_bot < src_top:
+        src_top -= 1
+        flags = c[src_top]
+        for _ in range(8):
+            if flags & 0x80:
+                src_top -= 1
+                l = c[src_top]
+                src_top -= 1
+                i = ((c[src_top] | l << 8) & 0xFFF) + 2
+                for _ in range(l + 0x20, -1, -0x10):
+                    c[dest - 1] = c[dest + i]
+                    dest -= 1
+            else:
+                src_top -= 1
+                dest -= 1
+                c[dest] = c[src_top]
+            flags <<= 1
+            if src_bot >= src_top:
+                break
+
+    return (bytes(c), rem)
 
 def compress(data: bytes, min_distance: int = 2, forward_iteration: bool = True, pad: bool = True) -> bytes:
     if len(data) == 0:
@@ -137,3 +174,109 @@ def compress(data: bytes, min_distance: int = 2, forward_iteration: bool = True,
                             dest_pos += 1
 
                 return bytes(ret[:dest_pos])
+
+def compress_code(code: bytes) -> bytes | None:
+    """
+    Given some code, compress it according to the modified lz10
+    encryption used for code compression.
+
+    Returns None if the compressed size would be larger than the regular
+    size.
+    """
+
+    def find_best_block(needle: bytes, haystack: bytes) -> Tuple[int, int]:
+        if len(needle) < 3:
+            return (0, 0)
+        first_bytes = needle[-3:]
+        ret_index = ret_len = 0
+        i = haystack.find(first_bytes) + 2
+        while i != 1:
+            l = min(i + 1, len(needle))
+            for j in range(3, l):
+                if needle[-j - 1] != haystack[i - j]:
+                    break
+            else:
+                j = l
+            if ret_len < j:
+                ret_index = i
+                ret_len = j
+            i = haystack.find(first_bytes, i - 1) + 2
+        return (ret_len, ret_index)
+
+    compressed = bytearray(len(code))
+    src_pos = dst_pos = len(code)
+    while True:
+        if src_pos < 1:
+            break
+        if dst_pos < 1:
+            return None
+        flag = 0
+        flag_pos = dst_pos = dst_pos - 1
+        for _ in range(8):
+            flag <<= 1
+            if 0 >= src_pos:
+                continue
+            match_len, match_idx = find_best_block(code[max(0, src_pos - 0x12):src_pos], code[src_pos:min(src_pos + 0x1002, len(code))])
+            if match_len < 3:
+                if dst_pos < 1:
+                    return None
+                dst_pos -= 1
+                src_pos -= 1
+                compressed[dst_pos] = code[src_pos]
+            else:
+                if dst_pos < 2:
+                    return None
+                src_pos -= match_len
+                match_idx -= 2
+                compressed[dst_pos - 1] = ((match_len - 3) << 4) | (match_idx >> 8)
+                dst_pos -= 2
+                compressed[dst_pos] = match_idx & 0xFF
+                flag |= 1
+        compressed[flag_pos] = flag
+
+    compressed = compressed[dst_pos:]
+    compressed_size = len(code) - dst_pos
+
+    i = compressed_size
+    orig_pos = len(code)
+    def iterate_overwrite() -> Tuple[int, int] | None:
+        nonlocal orig_pos
+        nonlocal i
+
+        if orig_pos < 1:
+            return (0, 0)
+        i -= 1
+        flag = compressed[i]
+        for _ in range(8):
+            if orig_pos <= 0:
+                break
+            if flag & 0x80 == 0:
+                i -= 1
+                orig_pos -= 1
+            else:
+                b = (compressed[i - 1] >> 4) + 3
+                i -= 2
+                orig_pos -= b
+                if orig_pos < i:
+                    return (orig_pos, i)
+            flag <<= 1
+        return None
+    while True:
+        ret = iterate_overwrite()
+        if ret is not None:
+            prefix_len, compressed_prefix_len = ret
+            break
+
+    before_padding = compressed_size - compressed_prefix_len + prefix_len
+    after_padding = (before_padding + 3) & ~3
+    total_len = after_padding + 8
+    if total_len >= len(code):
+        return None
+    return b''.join((
+        code[:prefix_len],
+        compressed[compressed_prefix_len:],
+        b'\xFF' * (after_padding - before_padding),
+        (total_len - prefix_len).to_bytes(3, 'little'),
+        (total_len - before_padding).to_bytes(1, 'little'),
+        (len(code) - total_len).to_bytes(4, 'little'),
+    ))
