@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-03-06
+### Added
+* Added DSi header fields (and automatically setting some of them).
+* The ARM9i and ARM7i are now parsed when reading and added when exporting.
+* The modcrypt areas in DSi ROMs are now decrypted.
+* The modified backwards LZ compression algorithm used for code has been implemented.
+* Parsing the start parameters structure and modifying it has been implemented.
+* Unpacking the code in terms of automatically loaded sections, and repacking,
+with added or removed or modified sections, has been implemented.
+
 ## [0.1.2] - 2025-12-30
 ### Fixed
 * The feature implemented in the previous version now works correctly.
@@ -17,5 +27,6 @@ are automatically appended to the end of the file order before the Rom is recons
 ## 0.1.0 - 2025-12-30
 The first release of this project.
 
+[0.2.0]: https://github.com/ljtpetersen/apnds/compare/v0.2.0...v0.1.2
 [0.1.2]: https://github.com/ljtpetersen/apnds/compare/v0.1.2...v0.1.1
 [0.1.1]: https://github.com/ljtpetersen/apnds/compare/v0.1.1...v0.1

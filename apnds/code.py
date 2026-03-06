@@ -123,7 +123,7 @@ class CodeStartParams:
     """
 
     @staticmethod
-    def from_code(code: bytes, loadaddress: int, entrypoint: int | None = None) -> Optional["CodeStartParams"]:
+    def from_code(code: bytes, loadaddress: int, entrypoint: Optional[int] = None) -> Optional["CodeStartParams"]:
         """
         Try to find the code start parameters.
         This is only useful for official titles, not Homebrew ones.
@@ -474,3 +474,13 @@ def try_find_start_info_no_signature(code: bytes, loadaddress: int, entrypoint: 
     if len(srt_valid) == 0 or len(srt_valid) >= 2 and len(candidates[srt_valid[0]]) == len(candidates[srt_valid[1]]):
         return None
     return srt_valid[0] - loadaddress
+
+
+def get_start_info_offset(code: bytes, loadaddress: int, entrypoint: Optional[int] = None) -> Optional[int]:
+    code_start_info_idx = code.find(START_INFO_SIGNATURE_DS)
+    if code_start_info_idx != -1:
+        return code_start_info_idx - 28
+    # assuming now that this isn't compressed code, and is in an old (pre-DSi) game.
+    # try to find start info by other means...
+    if entrypoint is not None:
+        return try_find_start_info_no_signature(code, loadaddress, entrypoint, True)

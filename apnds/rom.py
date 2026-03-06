@@ -12,6 +12,7 @@ from struct import pack, pack_into, unpack_from
 from typing import Literal, Tuple
 
 from .aes import aes_ctr
+from .code import get_start_info_offset
 
 BANNER_SIZE_MAP: Mapping[int, int] = {
     1: 0x840,
@@ -41,12 +42,15 @@ class HeaderField(IntEnum):
     UNITCODE = 0x012
     ENCRYPTION_SEED_SELECT = 0x013
     CHIPCAPACITY = 0x014
-    RESERVED_015 = 0x015
-    DSI_FLAGS = 0x01C
-    NDS_REGION_DSI_PERMIT_JUMP = 0x01D
     """
     This is computed and set automatically when converting the ROM to bytes.
     """
+    RESERVED_015 = 0x015
+    DSI_FLAGS = 0x01C
+    """
+    The second bit is cleared when converting the ROM to bytes.
+    """
+    NDS_REGION_DSI_PERMIT_JUMP = 0x01D
     REVISION = 0x01E
     ARM9_ROMOFFSET = 0x020
     """
@@ -119,9 +123,25 @@ class HeaderField(IntEnum):
     This is computed and set automatically when converting the ROM to bytes.
     """
     NDS_UNK_DSI_ARM9_PARAMS_TABLE_OFFSET = 0x088
+    """
+    This is computed and set automatically when converting the ROM to bytes,
+    when the unit code is nonzero.
+    """
     ARM7_PARAMS_TABLE_OFFSET = 0x08C
+    """
+    This is computed and set automatically when converting the ROM to bytes,
+    when the unit code is nonzero.
+    """
     NTR_ROM_REGION_END = 0x090
+    """
+    This is computed and set automatically when converting the ROM to bytes,
+    when the unit code is nonzero.
+    """
     TWL_ROM_REGION_START = 0x092
+    """
+    This is computed and set automatically when converting the ROM to bytes,
+    when the unit code is nonzero.
+    """
     TWL_ROM_REGION_START_END = 0x094
     HEADERCRC = 0x15E
     """
@@ -150,13 +170,29 @@ class HeaderField(IntEnum):
     UNK_1BC = 0x1BC
     APPFLAGS = 0x1BF
     ARM9I_ROMOFFSET = 0x1C0
+    """
+    This is computed and set automatically when converting the ROM to bytes,
+    when the unit code is nonzero.
+    """
     RESERVED_1C4 = 0x1C4
     ARM9I_LOADADDR = 0x1C8
     ARM9I_LOADSIZE = 0x1CC
+    """
+    This is computed and set automatically when converting the ROM to bytes,
+    when the unit code is nonzero.
+    """
     ARM7I_ROMOFFSET = 0x1D0
+    """
+    This is computed and set automatically when converting the ROM to bytes,
+    when the unit code is nonzero.
+    """
     UNK_1D4 = 0x1D4
     ARM7I_LOADADDR = 0x1D8
     ARM7I_LOADSIZE = 0x1DC
+    """
+    This is computed and set automatically when converting the ROM to bytes,
+    when the unit code is nonzero.
+    """
     DIGEST_NTR_START = 0x1E0
     DIGEST_NTR_SIZE = 0x1E4
     DIGEST_TWL_START = 0x1E8
@@ -168,15 +204,35 @@ class HeaderField(IntEnum):
     DIGEST_SECTOR_SIZE = 0x200
     DIGEST_BLOCK_SECTORCOUNT = 0x204
     BANNER_BSIZE = 0x208
+    """
+    This is computed and set automatically when converting the ROM to bytes,
+    when the unit code is nonzero.
+    """
     UNK_20C = 0x20C
     TOTAL_ROMSIZE = 0x210
+    """
+    This is computed and set automatically when converting the ROM to bytes,
+    when the unit code is nonzero.
+    """
     UNK_214 = 0x214
     UNK_218 = 0x218
     UNK_21C = 0x21C
     MODCRYPT1_START = 0x220
+    """
+    This is cleared when converting the ROM to bytes.
+    """
     MODCRYPT1_SIZE = 0x224
+    """
+    This is cleared when converting the ROM to bytes.
+    """
     MODCRYPT2_START = 0x228
+    """
+    This is cleared when converting the ROM to bytes.
+    """
     MODCRYPT2_SIZE = 0x22C
+    """
+    This is cleared when converting the ROM to bytes.
+    """
     TITLEID = 0x230
     PUBLIC_SAV_SIZE = 0x238
     PRIVATE_SAV_SIZE = 0x23C
@@ -965,13 +1021,19 @@ class Rom:
             # twl section should be padded to 0x80000
             post_header_bytes += fill_with * (-len(post_header_bytes) & 0x7FFFF)
             header[HeaderField.NTR_ROM_REGION_END] = header[HeaderField.TWL_ROM_REGION_START] = cur_off() >> 0x13
+            sio = get_start_info_offset(self.arm9, header.get_le(HeaderField.ARM9_LOADADDR), header.get_le(HeaderField.ARM9_ENTRYPOINT))
+            if sio is not None:
+                header[HeaderField.NDS_UNK_DSI_ARM9_PARAMS_TABLE_OFFSET] = sio
+            sio = get_start_info_offset(self.arm7, header.get_le(HeaderField.ARM7_LOADADDR), header.get_le(HeaderField.ARM7_ENTRYPOINT))
+            if sio is not None:
+                header[HeaderField.ARM7_PARAMS_TABLE_OFFSET] = sio
 
-            # we clear the modcrypt areas (assuming that they were decrypted when loading... no need to re-encrypt,
-            # and they might have moved... if people complain then I'll implement this again in the future.
-            header[HeaderField.DSI_FLAGS] = header.get_le(HeaderField.DSI_FLAGS) & ~2
-            for i in [1, 2]:
-                for sfx in ["START", "SIZE"]:
-                    header[getattr(HeaderField, f"MODCRYPT{i}_{sfx}")] = 0
+        # we clear the modcrypt areas (assuming that they were decrypted when loading... no need to re-encrypt,
+        # and they might have moved... if people complain then I'll implement this again in the future.
+        header[HeaderField.DSI_FLAGS] = header.get_le(HeaderField.DSI_FLAGS) & ~2
+        for i in [1, 2]:
+            for sfx in ["START", "SIZE"]:
+                header[getattr(HeaderField, f"MODCRYPT{i}_{sfx}")] = 0
 
         if has_twl_section:
             align_post_header_bytes()
@@ -984,11 +1046,16 @@ class Rom:
                 post_header_bytes += self.arm9i
                 last_padding = align_post_header_bytes()
                 header[HeaderField.ARM9I_LOADSIZE] = len(self.arm9i)
+            else:
+                header[HeaderField.ARM9I_ROMOFFSET] = header[HeaderField.ARM9I_LOADSIZE] = 0
             if self.arm7i is not None:
                 header[HeaderField.ARM7I_ROMOFFSET] = cur_off()
                 post_header_bytes += self.arm7i
                 last_padding = align_post_header_bytes()
                 header[HeaderField.ARM7I_LOADSIZE] = len(self.arm7i)
+            else:
+                header[HeaderField.ARM7I_ROMOFFSET] = header[HeaderField.ARM7I_LOADSIZE] = 0
+
 
         if last_padding > 0:
             post_header_bytes = post_header_bytes[:-last_padding]
@@ -1009,7 +1076,9 @@ class Rom:
         tailsize = trycap << shift
 
         header[HeaderField.ROMSIZE] = ntr_rom_size
-        header[HeaderField.TOTAL_ROMSIZE] = total_rom_size
+        if header.get_le(HeaderField.UNITCODE) != 0:
+            header[HeaderField.TOTAL_ROMSIZE] = total_rom_size
+            header[HeaderField.BANNER_BSIZE] = len(self.banner)
         header[HeaderField.HEADERSIZE] = HeaderField.ENTIRE_HEADER
 
         header[HeaderField.HEADERCRC] = crc16(bytes(header.data[:HeaderField.HEADERCRC]), 0xFFFF)
