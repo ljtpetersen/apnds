@@ -4,12 +4,14 @@
 # Licensed under MIT. See LICENSE
 
 from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence, Sequence
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from enum import IntEnum
 from itertools import chain
 from queue import SimpleQueue
 from struct import pack, pack_into, unpack_from
 from typing import Literal, Tuple
+
+from .aes import aes_ctr
 
 BANNER_SIZE_MAP: Mapping[int, int] = {
     1: 0x840,
@@ -36,7 +38,12 @@ class HeaderField(IntEnum):
     """
     SERIAL = 0x00C
     MAKER = 0x010
+    UNITCODE = 0x012
+    ENCRYPTION_SEED_SELECT = 0x013
     CHIPCAPACITY = 0x014
+    RESERVED_015 = 0x015
+    DSI_FLAGS = 0x01C
+    NDS_REGION_DSI_PERMIT_JUMP = 0x01D
     """
     This is computed and set automatically when converting the ROM to bytes.
     """
@@ -111,19 +118,83 @@ class HeaderField(IntEnum):
     """
     This is computed and set automatically when converting the ROM to bytes.
     """
-    STATICFOOTER = 0x088
-    STATICFOOTER_END = 0x08C
-    """
-    This entry exists so that the STATICFOOTER entry's length is computed correctly.
-    """
+    NDS_UNK_DSI_ARM9_PARAMS_TABLE_OFFSET = 0x088
+    ARM7_PARAMS_TABLE_OFFSET = 0x08C
+    NTR_ROM_REGION_END = 0x090
+    TWL_ROM_REGION_START = 0x092
+    TWL_ROM_REGION_START_END = 0x094
     HEADERCRC = 0x15E
     """
     This is computed and set automatically when converting the ROM to bytes.
     """
-    HEADERCRC_END = 0x160
-    """
-    This entry exists so that the HEADERCRC entry's length is computed correctly.
-    """
+    DEBUG_ROM_SOURCE = 0x160
+    DEBUG_ROM_SIZE = 0x164
+    DEBUG_ROM_DESTINATION = 0x168
+    UNK_16C = 0x16C
+    ZEROS_170 = 0x170
+    MBK_GLOBAL_1 = 0x180
+    MBK_GLOBAL_2 = 0x184
+    MBK_GLOBAL_3 = 0x188
+    MBK_GLOBAL_4 = 0x18C
+    MBK_GLOBAL_5 = 0x190
+    MBK_ARM9_6 = 0x194
+    MBK_ARM9_7 = 0x198
+    MBK_ARM9_8 = 0x19C
+    MBK_ARM7_6 = 0x1A0
+    MBK_ARM7_7 = 0x1A4
+    MBK_ARM7_8 = 0x1A8
+    MBK_WRAMCNT_SETTING = 0x1AC
+    REGION_FLAGS = 0x1B0
+    ACCESS_CONTROL = 0x1B4
+    SCFG_EXT7_MASK = 0x1B8
+    UNK_1BC = 0x1BC
+    APPFLAGS = 0x1BF
+    ARM9I_ROMOFFSET = 0x1C0
+    RESERVED_1C4 = 0x1C4
+    ARM9I_LOADADDR = 0x1C8
+    ARM9I_LOADSIZE = 0x1CC
+    ARM7I_ROMOFFSET = 0x1D0
+    UNK_1D4 = 0x1D4
+    ARM7I_LOADADDR = 0x1D8
+    ARM7I_LOADSIZE = 0x1DC
+    DIGEST_NTR_START = 0x1E0
+    DIGEST_NTR_SIZE = 0x1E4
+    DIGEST_TWL_START = 0x1E8
+    DIGEST_TWL_SIZE = 0x1EC
+    SECTOR_HASHTABLE_START = 0x1F0
+    SECTOR_HASHTABLE_SIZE = 0x1F4
+    BLOCK_HASHTABLE_START = 0x1F8
+    BLOCK_HASHTABLE_SIZE = 0x1FC
+    DIGEST_SECTOR_SIZE = 0x200
+    DIGEST_BLOCK_SECTORCOUNT = 0x204
+    BANNER_BSIZE = 0x208
+    UNK_20C = 0x20C
+    TOTAL_ROMSIZE = 0x210
+    UNK_214 = 0x214
+    UNK_218 = 0x218
+    UNK_21C = 0x21C
+    MODCRYPT1_START = 0x220
+    MODCRYPT1_SIZE = 0x224
+    MODCRYPT2_START = 0x228
+    MODCRYPT2_SIZE = 0x22C
+    TITLEID = 0x230
+    PUBLIC_SAV_SIZE = 0x238
+    PRIVATE_SAV_SIZE = 0x23C
+    RESERVED_240 = 0x240
+    AGE_RATINGS = 0x2F0
+    HMAC_ARM9 = 0x300
+    HMAC_ARM7 = 0x314
+    HMAC_DIGEST_MASTER = 0x328
+    HMAC_ICON_TITLE = 0x33C
+    HMAC_ARM9I = 0x350
+    HMAC_ARM7I = 0x364
+    RESERVED_378 = 0x378
+    RESERVED_38C = 0x38C
+    HMAC_ARM9_WO_SECURE_AREA = 0x3A0
+    RESERVED_3B4 = 0x3B4
+    RESERVED_E00 = 0xE00
+    RSA_SIGNATURE = 0xF80
+    RESERVED_1000 = 0x1000
     ENTIRE_HEADER = 0x4000
     """
     This is the size of the entire header.
@@ -140,8 +211,18 @@ class HeaderField(IntEnum):
             case HeaderField.SERIAL:
                 return HeaderField.MAKER
             case HeaderField.MAKER:
+                return HeaderField.UNITCODE
+            case HeaderField.UNITCODE:
+                return HeaderField.ENCRYPTION_SEED_SELECT
+            case HeaderField.ENCRYPTION_SEED_SELECT:
                 return HeaderField.CHIPCAPACITY
             case HeaderField.CHIPCAPACITY:
+                return HeaderField.RESERVED_015
+            case HeaderField.RESERVED_015:
+                return HeaderField.DSI_FLAGS
+            case HeaderField.DSI_FLAGS:
+                return HeaderField.NDS_REGION_DSI_PERMIT_JUMP
+            case HeaderField.NDS_REGION_DSI_PERMIT_JUMP:
                 return HeaderField.REVISION
             case HeaderField.REVISION:
                 return HeaderField.ARM9_ROMOFFSET
@@ -194,14 +275,154 @@ class HeaderField(IntEnum):
             case HeaderField.ROMSIZE:
                 return HeaderField.HEADERSIZE
             case HeaderField.HEADERSIZE:
-                return HeaderField.STATICFOOTER
-            case HeaderField.STATICFOOTER:
-                return HeaderField.STATICFOOTER_END
-            case HeaderField.STATICFOOTER_END:
+                return HeaderField.NDS_UNK_DSI_ARM9_PARAMS_TABLE_OFFSET
+            case HeaderField.NDS_UNK_DSI_ARM9_PARAMS_TABLE_OFFSET:
+                return HeaderField.ARM7_PARAMS_TABLE_OFFSET
+            case HeaderField.ARM7_PARAMS_TABLE_OFFSET:
+                return HeaderField.NTR_ROM_REGION_END
+            case HeaderField.NTR_ROM_REGION_END:
+                return HeaderField.TWL_ROM_REGION_START
+            case HeaderField.TWL_ROM_REGION_START:
+                return HeaderField.TWL_ROM_REGION_START_END
+            case HeaderField.TWL_ROM_REGION_START_END:
                 return HeaderField.HEADERCRC
             case HeaderField.HEADERCRC:
-                return HeaderField.HEADERCRC_END
-            case HeaderField.HEADERCRC_END:
+                return HeaderField.DEBUG_ROM_SOURCE
+            case HeaderField.DEBUG_ROM_SOURCE:
+                return HeaderField.DEBUG_ROM_SIZE
+            case HeaderField.DEBUG_ROM_SIZE:
+                return HeaderField.DEBUG_ROM_DESTINATION
+            case HeaderField.DEBUG_ROM_DESTINATION:
+                return HeaderField.UNK_16C
+            case HeaderField.UNK_16C:
+                return HeaderField.ZEROS_170
+            case HeaderField.ZEROS_170:
+                return HeaderField.MBK_GLOBAL_1
+            case HeaderField.MBK_GLOBAL_1:
+                return HeaderField.MBK_GLOBAL_2
+            case HeaderField.MBK_GLOBAL_2:
+                return HeaderField.MBK_GLOBAL_3
+            case HeaderField.MBK_GLOBAL_3:
+                return HeaderField.MBK_GLOBAL_4
+            case HeaderField.MBK_GLOBAL_4:
+                return HeaderField.MBK_GLOBAL_5
+            case HeaderField.MBK_GLOBAL_5:
+                return HeaderField.MBK_ARM9_6
+            case HeaderField.MBK_ARM9_6:
+                return HeaderField.MBK_ARM9_7
+            case HeaderField.MBK_ARM9_7:
+                return HeaderField.MBK_ARM9_8
+            case HeaderField.MBK_ARM9_8:
+                return HeaderField.MBK_ARM7_6
+            case HeaderField.MBK_ARM7_6:
+                return HeaderField.MBK_ARM7_7
+            case HeaderField.MBK_ARM7_7:
+                return HeaderField.MBK_ARM7_8
+            case HeaderField.MBK_ARM7_8:
+                return HeaderField.MBK_WRAMCNT_SETTING
+            case HeaderField.MBK_WRAMCNT_SETTING:
+                return HeaderField.REGION_FLAGS
+            case HeaderField.REGION_FLAGS:
+                return HeaderField.ACCESS_CONTROL
+            case HeaderField.ACCESS_CONTROL:
+                return HeaderField.SCFG_EXT7_MASK
+            case HeaderField.SCFG_EXT7_MASK:
+                return HeaderField.UNK_1BC
+            case HeaderField.UNK_1BC:
+                return HeaderField.APPFLAGS
+            case HeaderField.APPFLAGS:
+                return HeaderField.ARM9I_ROMOFFSET
+            case HeaderField.ARM9I_ROMOFFSET:
+                return HeaderField.RESERVED_1C4
+            case HeaderField.RESERVED_1C4:
+                return HeaderField.ARM9I_LOADADDR
+            case HeaderField.ARM9I_LOADADDR:
+                return HeaderField.ARM9I_LOADSIZE
+            case HeaderField.ARM9I_LOADSIZE:
+                return HeaderField.ARM7I_ROMOFFSET
+            case HeaderField.ARM7I_ROMOFFSET:
+                return HeaderField.UNK_1D4
+            case HeaderField.UNK_1D4:
+                return HeaderField.ARM7I_LOADADDR
+            case HeaderField.ARM7I_LOADADDR:
+                return HeaderField.ARM7I_LOADSIZE
+            case HeaderField.ARM7I_LOADSIZE:
+                return HeaderField.DIGEST_NTR_START
+            case HeaderField.DIGEST_NTR_START:
+                return HeaderField.DIGEST_NTR_SIZE
+            case HeaderField.DIGEST_NTR_SIZE:
+                return HeaderField.DIGEST_TWL_START
+            case HeaderField.DIGEST_TWL_START:
+                return HeaderField.DIGEST_TWL_SIZE
+            case HeaderField.DIGEST_TWL_SIZE:
+                return HeaderField.SECTOR_HASHTABLE_START
+            case HeaderField.SECTOR_HASHTABLE_START:
+                return HeaderField.SECTOR_HASHTABLE_SIZE
+            case HeaderField.SECTOR_HASHTABLE_SIZE:
+                return HeaderField.BLOCK_HASHTABLE_START
+            case HeaderField.BLOCK_HASHTABLE_START:
+                return HeaderField.BLOCK_HASHTABLE_SIZE
+            case HeaderField.BLOCK_HASHTABLE_SIZE:
+                return HeaderField.DIGEST_SECTOR_SIZE
+            case HeaderField.DIGEST_SECTOR_SIZE:
+                return HeaderField.DIGEST_BLOCK_SECTORCOUNT
+            case HeaderField.DIGEST_BLOCK_SECTORCOUNT:
+                return HeaderField.BANNER_BSIZE
+            case HeaderField.BANNER_BSIZE:
+                return HeaderField.UNK_20C
+            case HeaderField.UNK_20C:
+                return HeaderField.TOTAL_ROMSIZE
+            case HeaderField.TOTAL_ROMSIZE:
+                return HeaderField.UNK_214
+            case HeaderField.UNK_214:
+                return HeaderField.UNK_218
+            case HeaderField.UNK_218:
+                return HeaderField.UNK_21C
+            case HeaderField.UNK_21C:
+                return HeaderField.MODCRYPT1_START
+            case HeaderField.MODCRYPT1_START:
+                return HeaderField.MODCRYPT1_SIZE
+            case HeaderField.MODCRYPT1_SIZE:
+                return HeaderField.MODCRYPT2_START
+            case HeaderField.MODCRYPT2_START:
+                return HeaderField.MODCRYPT2_SIZE
+            case HeaderField.MODCRYPT2_SIZE:
+                return HeaderField.TITLEID
+            case HeaderField.TITLEID:
+                return HeaderField.PUBLIC_SAV_SIZE
+            case HeaderField.PUBLIC_SAV_SIZE:
+                return HeaderField.PRIVATE_SAV_SIZE
+            case HeaderField.PRIVATE_SAV_SIZE:
+                return HeaderField.RESERVED_240
+            case HeaderField.RESERVED_240:
+                return HeaderField.AGE_RATINGS
+            case HeaderField.AGE_RATINGS:
+                return HeaderField.HMAC_ARM9
+            case HeaderField.HMAC_ARM9:
+                return HeaderField.HMAC_ARM7
+            case HeaderField.HMAC_ARM7:
+                return HeaderField.HMAC_DIGEST_MASTER
+            case HeaderField.HMAC_DIGEST_MASTER:
+                return HeaderField.HMAC_ICON_TITLE
+            case HeaderField.HMAC_ICON_TITLE:
+                return HeaderField.HMAC_ARM9I
+            case HeaderField.HMAC_ARM9I:
+                return HeaderField.HMAC_ARM7I
+            case HeaderField.HMAC_ARM7I:
+                return HeaderField.RESERVED_378
+            case HeaderField.RESERVED_378:
+                return HeaderField.RESERVED_38C
+            case HeaderField.RESERVED_38C:
+                return HeaderField.HMAC_ARM9_WO_SECURE_AREA
+            case HeaderField.HMAC_ARM9_WO_SECURE_AREA:
+                return HeaderField.RESERVED_3B4
+            case HeaderField.RESERVED_3B4:
+                return HeaderField.RESERVED_E00
+            case HeaderField.RESERVED_E00:
+                return HeaderField.RSA_SIGNATURE
+            case HeaderField.RSA_SIGNATURE:
+                return HeaderField.RESERVED_1000
+            case HeaderField.RESERVED_1000:
                 return HeaderField.ENTIRE_HEADER
             case HeaderField.ENTIRE_HEADER:
                 return HeaderField.ENTIRE_HEADER
@@ -467,6 +688,47 @@ def crc16(data: bytes, crc: int) -> int:
 
     return crc
 
+def process_modcrypt(rom: bytes, header: Header) -> bytes:
+    dsi_flags = header.get_le(HeaderField.DSI_FLAGS)
+    if dsi_flags & 2 == 0:
+        return rom
+
+    if dsi_flags & 4 != 0 or header.get_le(HeaderField.APPFLAGS) & 0x80 != 0:
+        key = rom[:0x10][::-1]
+    else:
+        game_code = header[HeaderField.SERIAL]
+        key_x = b'Nintendo' + game_code + game_code[::-1]
+        key_y = header[HeaderField.HMAC_ARM9I][:0x10]
+        key_x_i = int.from_bytes(key_x, 'little')
+        key_y_i = int.from_bytes(key_y, 'little')
+        pre_rol = ((key_x_i ^ key_y_i) + 0xFFFEFB4E295902582A680F5F1A4F3E79)
+        shft = pre_rol << 42
+        rol = shft | ((shft >> 128) & ((1 << 42) - 1))
+        rol &= (1 << 128) - 1
+        key = rol.to_bytes(16)
+
+    iv1 = header[HeaderField.HMAC_ARM9][:0x10][::-1]
+    iv2 = header[HeaderField.HMAC_ARM7][:0x10][::-1]
+
+    rom_m = bytearray(rom)
+
+    mc1_start = header.get_le(HeaderField.MODCRYPT1_START)
+    if mc1_start != 0:
+        mc1_size = header.get_le(HeaderField.MODCRYPT1_SIZE)
+        mc1 = rom[mc1_start:mc1_start + mc1_size]
+        new_mc1 = aes_ctr(key, iv1, mc1, True)
+        rom_m[mc1_start:mc1_start + mc1_size] = new_mc1
+
+    mc2_start = header.get_le(HeaderField.MODCRYPT2_START)
+    if mc2_start != 0:
+        mc2_size = header.get_le(HeaderField.MODCRYPT2_SIZE)
+        mc2 = rom[mc2_start:mc2_start + mc2_size]
+        new_mc2 = aes_ctr(key, iv2, mc2)
+        rom_m[mc2_start:mc2_start + mc2_size] = new_mc2
+
+
+    return bytes(rom_m)
+
 @dataclass
 class Rom:
     """
@@ -492,6 +754,14 @@ class Rom:
     """
     These are the ARM7 overlays of the ROM.
     """
+    arm9i: bytes | None
+    """
+    This is the ARM9i code of the ROM, if it exists.
+    """
+    arm7i: bytes | None
+    """
+    This is the ARM7i code of the ROM, if it exists.
+    """
     files: MutableMapping[str, bytes]
     """
     This is the mapping of file paths to files in the ROM.
@@ -511,11 +781,20 @@ class Rom:
     """
 
     @staticmethod
-    def from_bytes(rom: bytes) -> "Rom":
+    def from_bytes(rom: bytes, decrypt_modcrypt: bool = True) -> "Rom":
         """
         Decompose a ROM into its components.
+
+        If decrypt_modcrypt is True, then the modcrypt areas are decrypted.
+        This should really only be set to False if working with a cartridge
+        that already has the areas decrypted, but whose modcrypt
+        regions haven't been cleared in the header.
         """
         header = Header(rom[:HeaderField.ENTIRE_HEADER])
+
+        if decrypt_modcrypt:
+            rom = process_modcrypt(rom, header)
+
         (file_seq, file_id_order) = get_files(header, rom)
         fntb = header.get_rom_region(rom, HeaderField.FNTB_ROMOFFSET, HeaderField.FNTB_BSIZE)
         filename_id_map = get_filename_id_map(fntb)
@@ -525,6 +804,12 @@ class Rom:
         file_order = [id_filename_map[id] for id in file_id_order if id in id_filename_map]
 
         arm9_start = header.get_le(HeaderField.ARM9_ROMOFFSET)
+        if arm9_start < 0x8000:
+            # we have a secure area
+            if rom[0x4000:0x4008] == b'encryObj':
+                print("warning: this rom has an indication that it has an encrypted secure area. decryption is not currently implemented by this library")
+            elif rom[0x4000:0x4008] != b'\xFF\xDE\xFF\xE7' * 2:
+                print("warning: this rom has an indication that it had an encrypted secure area, but the secure area signature does not match that expected of a dump")
         arm9_len = header.get_le(HeaderField.ARM9_LOADSIZE)
         if arm9_start + arm9_len + 12 <= len(rom) and rom[arm9_start + arm9_len:arm9_start + arm9_len + 4] == bytes.fromhex('2106C0DE'):
             arm9_len += 12
@@ -536,7 +821,30 @@ class Rom:
         banner_version = int.from_bytes(rom[banner_off:banner_off + 2], 'little')
         banner = rom[banner_off:banner_off + BANNER_SIZE_MAP[banner_version]]
 
-        return Rom(header, arm9, arm7, arm9_ovys, arm7_ovys, {name:file_seq[id] for name, id in filename_id_map.items()}, file_order, banner)
+        if header.get_le(HeaderField.UNITCODE) != 0:
+            if header.get_le(HeaderField.ARM9I_ROMOFFSET) != 0:
+                arm9i = header.get_rom_region(rom, HeaderField.ARM9I_ROMOFFSET, HeaderField.ARM9I_LOADSIZE)
+            else:
+                arm9i = None
+            if header.get_le(HeaderField.ARM7I_ROMOFFSET) != 0:
+                arm7i = header.get_rom_region(rom, HeaderField.ARM7I_ROMOFFSET, HeaderField.ARM7I_LOADSIZE)
+            else:
+                arm7i = None
+        else:
+            arm9i = arm7i = None
+
+        return Rom(
+            header,
+            arm9,
+            arm7,
+            arm9_ovys,
+            arm7_ovys,
+            arm9i,
+            arm7i,
+            {name:file_seq[id] for name, id in filename_id_map.items()},
+            file_order,
+            banner
+        )
 
     def to_bytes(self, fill_tail: bool = True, fill_with: bytes = b'\xFF') -> bytes:
         """
@@ -544,6 +852,8 @@ class Rom:
         """
         if len(fill_with) != 1:
             raise ValueError(f"fill_with has length greater than 1")
+
+        rom_alignment = self.rom_alignment
 
         ovt9, ovys9 = construct_overlay_table(self.arm9_overlays)
         ovt7, ovys7 = construct_overlay_table(self.arm7_overlays, len(ovys9))
@@ -559,7 +869,7 @@ class Rom:
             return len(post_header_bytes) + HeaderField.ENTIRE_HEADER
         def align_post_header_bytes() -> int:
             nonlocal post_header_bytes
-            padding_len = -len(post_header_bytes) & (self.rom_alignment - 1)
+            padding_len = -len(post_header_bytes) & (rom_alignment - 1)
             post_header_bytes += fill_with * padding_len
             return padding_len
 
@@ -573,10 +883,10 @@ class Rom:
             header[HeaderField.ARM9_LOADSIZE] = len(self.arm9)
 
         def size_after_padding(size: int) -> int:
-            return size + (-size & (self.rom_alignment - 1))
+            return size + (-size & (rom_alignment - 1))
 
         def pad_bytes(data: bytes) -> bytes:
-            padding = -len(data) & (self.rom_alignment - 1)
+            padding = -len(data) & (rom_alignment - 1)
             return data + fill_with * padding
 
         def write_ovs(which: Literal["9"] | Literal["7"]) -> None:
@@ -635,21 +945,60 @@ class Rom:
         header[HeaderField.BANNER_ROMOFFSET] = cur_off()
         post_header_bytes += self.banner
         last_padding = align_post_header_bytes()
+        header[HeaderField.BANNER_BSIZE] = len(self.banner)
 
         post_header_bytes += b''.join(pad_bytes(self.files[path]) for path in file_order)
 
         if len(file_order) > 0:
-            last_padding = -len(self.files[file_order[-1]]) & (self.rom_alignment - 1)
+            last_padding = -len(self.files[file_order[-1]]) & (rom_alignment - 1)
+
+        if last_padding > 0:
+            post_header_bytes = post_header_bytes[:-last_padding]
+            last_padding = 0
+
+        ntr_rom_size = cur_off()
+
+        has_twl_section = header.get_le(HeaderField.UNITCODE) != 0 \
+            and (self.arm9i is not None or self.arm7i is not None)
+
+        if header.get_le(HeaderField.UNITCODE) != 0:
+            # twl section should be padded to 0x80000
+            post_header_bytes += fill_with * (-len(post_header_bytes) & 0x7FFFF)
+            header[HeaderField.NTR_ROM_REGION_END] = header[HeaderField.TWL_ROM_REGION_START] = cur_off() >> 0x13
+
+            # we clear the modcrypt areas (assuming that they were decrypted when loading... no need to re-encrypt,
+            # and they might have moved... if people complain then I'll implement this again in the future.
+            header[HeaderField.DSI_FLAGS] = header.get_le(HeaderField.DSI_FLAGS) & ~2
+            for i in [1, 2]:
+                for sfx in ["START", "SIZE"]:
+                    header[getattr(HeaderField, f"MODCRYPT{i}_{sfx}")] = 0
+
+        if has_twl_section:
+            align_post_header_bytes()
+            if self.arm9i is not None:
+                # there is some cryptographic stuff before the arm9i...
+                # leave it zero for now
+                post_header_bytes += bytes(0x3000)
+
+                header[HeaderField.ARM9I_ROMOFFSET] = cur_off()
+                post_header_bytes += self.arm9i
+                last_padding = align_post_header_bytes()
+                header[HeaderField.ARM9I_LOADSIZE] = len(self.arm9i)
+            if self.arm7i is not None:
+                header[HeaderField.ARM7I_ROMOFFSET] = cur_off()
+                post_header_bytes += self.arm7i
+                last_padding = align_post_header_bytes()
+                header[HeaderField.ARM7I_LOADSIZE] = len(self.arm7i)
 
         if last_padding > 0:
             post_header_bytes = post_header_bytes[:-last_padding]
 
-        rom_size = cur_off()
+        total_rom_size = cur_off()
 
         trycap = TRY_CAPSHIFT_BASE
         maxshift = MAX_CAPSHIFT_PROM if storage_type == "PROM" else MAX_CAPSHIFT_MROM
         for shift in range(maxshift):
-            if rom_size < (trycap << shift):
+            if total_rom_size < (trycap << shift):
                 header[HeaderField.CHIPCAPACITY] = shift
                 break
         else:
@@ -659,7 +1008,8 @@ class Rom:
 
         tailsize = trycap << shift
 
-        header[HeaderField.ROMSIZE] = rom_size
+        header[HeaderField.ROMSIZE] = ntr_rom_size
+        header[HeaderField.TOTAL_ROMSIZE] = total_rom_size
         header[HeaderField.HEADERSIZE] = HeaderField.ENTIRE_HEADER
 
         header[HeaderField.HEADERCRC] = crc16(bytes(header.data[:HeaderField.HEADERCRC]), 0xFFFF)
@@ -670,3 +1020,4 @@ class Rom:
         return bytes(header.data + post_header_bytes)
 
 __all__: list[str] = ['HeaderField', 'Header', 'Overlay', 'Rom']
+

@@ -4,12 +4,19 @@
 # Licensed under MIT. See LICENSE
 
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from struct import unpack_from
-from typing import Optional, Tuple
+from struct import pack, pack_into, unpack_from
+from typing import Literal, Optional, Tuple
 
-START_INFO_SIGNATURE_DS = bytes.fromhex("2106C0DEDEC00621")
-START_INFO_SIGNATURE_DSI = bytes.fromhex("6314C0DEDEC01463")
+from .lz import decompress_code, compress_code
+
+START_INFO_SIGNATURE_DS: bytes = bytes.fromhex("2106C0DEDEC00621")
+START_INFO_SIGNATURE_DSI: bytes = bytes.fromhex("6314C0DEDEC01463")
+CODE_HEADER_LEN_MAP: Mapping[Literal["7"] | Literal["9"], int] = {
+    "7": 0x1000,
+    "9": 0x4000,
+}
 
 @dataclass
 class AutoloadSectionInfo:
@@ -33,16 +40,47 @@ class AutoloadSectionInfo:
     How large the BSS data after this section's code is.
     The BSS data will be zeroed.
     """
-    static_init_table: int | None = None
+    static_init_fun_ptr: int | None = None
     """
-    A table to static initializers for this section.
-    This field is only present on newer DSi-compatible ROMs.
+    A pointer to the static initialization function called
+    after for this section, after all sections are loaded.
+
+    This field is only present on DSi-compatible ROMs.
+    It will be ignored if set on DS ROMs.
     """
+    
+    @staticmethod
+    def from_bytes_ds(code: bytes, offset: int) -> "AutoloadSectionInfo":
+        return AutoloadSectionInfo(*unpack_from("<3I", code, offset))
+
+    @staticmethod
+    def from_bytes_dsi(code: bytes, offset: int) -> "AutoloadSectionInfo":
+        return AutoloadSectionInfo(**{
+            k:v
+            for k, v in zip(
+                ["destination", "size", "static_init_fun_ptr", "bss_size"],
+                unpack_from("<4I", code, offset),
+            )
+        })
+
+    def to_bytes_ds(self, size: Optional[int] = None) -> bytes:
+        if size is None:
+            size = self.size
+        return pack("<3I", self.destination, size, self.bss_size)
+
+    def to_bytes_dsi(self, size: Optional[int] = None) -> bytes:
+        if size is None:
+            size = self.size
+        if self.static_init_fun_ptr is None:
+            static_init_fun_ptr = 0
+        else:
+            static_init_fun_ptr = self.static_init_fun_ptr
+        return pack("<4I", self.destination, size, static_init_fun_ptr, self.bss_size)
 
 @dataclass
-class ArmStartParams:
+class CodeStartParams:
     """
-    This structure contains the start parameters of the ARM code.
+    This structure contains the start parameters of the code.
     """
 
     autoload_sections: Tuple[int, int]
@@ -69,25 +107,25 @@ class ArmStartParams:
     This is somewhat inconsistent. A 32-bit value.
     The top 8 bits should always be major version.
     """
-    armi_autoload_sections: Optional[Tuple[int, int]] = None
+    dsi_autoload_sections: Optional[Tuple[int, int]] = None
     """
     The address range containing the ARM i autoload section info,
     if it exists.
     """
-    armi_autoload_start: Optional[int] = None
+    dsi_autoload_start: Optional[int] = None
     """
-    The starting address to copy into the ARM i autoload section info,
+    The starting address to copy into the DSi autoload section info,
     if it exists.
     """
-    armi_compressed_end: Optional[int] = None
+    dsi_compressed_end: Optional[int] = None
     """
-    The end address of the compressed section of the ARM i, if it exists.
+    The end address of the compressed section of the DSi, if it exists.
     """
 
     @staticmethod
-    def from_arm9(arm9: bytes, loadaddress: int, entrypoint: int | None = None) -> Optional["ArmStartParams"]:
+    def from_code(code: bytes, loadaddress: int, entrypoint: int | None = None) -> Optional["CodeStartParams"]:
         """
-        Try to find the ARM9 start parameters.
+        Try to find the code start parameters.
         This is only useful for official titles, not Homebrew ones.
 
         In some older titles, a certain signature is not present to help locate the start parameters structure.
@@ -96,112 +134,233 @@ class ArmStartParams:
         field will be None. For more details on this,
         see the try_find_start_info_no_signature function.
         """
-        arm9_start_info_idx = arm9.find(START_INFO_SIGNATURE_DS)
-        if arm9_start_info_idx == -1:
+        code_start_info_idx = code.find(START_INFO_SIGNATURE_DS)
+        if code_start_info_idx == -1:
             # assuming now that this isn't compressed code, and is in an old (pre-DSi) game.
             # try to find start info by other means...
             if entrypoint is not None:
-                arm9_start_info_idx = try_find_start_info_no_signature(arm9, loadaddress, entrypoint, True)
-                if arm9_start_info_idx is None:
+                code_start_info_idx = try_find_start_info_no_signature(code, loadaddress, entrypoint, True)
+                if code_start_info_idx is None:
                     return None
                 compressed_end = 0
                 sdk_version = None
             else:
                 return None
         else:
-            compressed_end, sdk_version = unpack_from("<2I", arm9, arm9_start_info_idx - 8)
-            arm9_start_info_idx -= 28
+            compressed_end, sdk_version = unpack_from("<2I", code, code_start_info_idx - 8)
+            code_start_info_idx -= 28
 
-        arm9i_start_info_idx = arm9.find(START_INFO_SIGNATURE_DSI)
-        if arm9i_start_info_idx == -1:
-            arm9i_autoload_sections = arm9i_autoload_start = arm9i_compressed_end = None
+        codei_start_info_idx = code.find(START_INFO_SIGNATURE_DSI)
+        if codei_start_info_idx == -1:
+            codei_autoload_sections = codei_autoload_start = codei_compressed_end = None
         else:
-            au9_secs_start, au9_secs_end, arm9i_autoload_start, arm9i_compressed_end = \
-                unpack_from("<4I", arm9, arm9i_start_info_idx - 16)
-            arm9i_autoload_sections = (au9_secs_start, au9_secs_end)
-            if arm9i_compressed_end == 0:
-                arm9i_compressed_end = None
+            au_secs_start, au_secs_end, codei_autoload_start, codei_compressed_end = \
+                unpack_from("<4I", code, codei_start_info_idx - 16)
+            codei_autoload_sections = (au_secs_start, au_secs_end)
+            if codei_compressed_end == 0:
+                codei_compressed_end = None
 
         au_secs_start, au_secs_end, au_start, bss_start, bss_end = \
-            unpack_from("<5I", arm9, arm9_start_info_idx)
-        return ArmStartParams(
+            unpack_from("<5I", code, code_start_info_idx)
+        return CodeStartParams(
             (au_secs_start, au_secs_end),
             au_start,
             (bss_start, bss_end),
             compressed_end if compressed_end != 0 else None,
             sdk_version,
-            arm9i_autoload_sections,
-            arm9i_autoload_start,
-            arm9i_compressed_end,
+            codei_autoload_sections,
+            codei_autoload_start,
+            codei_compressed_end,
         )
 
-    @staticmethod
-    def from_arm7(arm7: bytes, loadaddress: int, entrypoint: int | None = None) -> Optional["ArmStartParams"]:
+    def get_sections(self, code: bytes, loadaddress: int, is_dsi: bool = False) -> Tuple[Sequence[Tuple[bytes, Optional[AutoloadSectionInfo]]], bytes]:
         """
-        Try to find the ARM7 start parameters.
-        This is only useful for official titles, not Homebrew ones.
+        Given the start information of some code, the code, and the load
+        address of the code, split the code into sections.
 
-        In DS title and older DSi titles, a certain signature is not present to help locate the start parameters structure.
-        For these, a best-guess approach is used, scanning the area containing
-        the C runtime for this structure. In this case, the sdk_version
-        field will be None. For more details on this,
-        see the try_find_start_info_no_signature function.
+        If the code is compressed, this method will also decompress it.
+
+        This function returns the sections, and the data that would
+        be overwritten when decompressing, if the code is compressed.
+        In the sections, the first (and maybe last) elements
+        will be the code that is not automatically loaded,
+        whether it is before or after any section. These
+        two will not have an AutoloadSectionInfo.
+        All middle elements of the sections will have an
+        AutoloadSectionInfo.
         """
-        arm7_start_info_idx = arm7.find(START_INFO_SIGNATURE_DS)
-        if arm7_start_info_idx == -1:
+
+        # decompress the code
+        
+        dp = "dsi_" if is_dsi else ""
+        compressed_end = getattr(self, dp + "compressed_end")
+        if compressed_end:
+            code, rem = decompress_code(code, compressed_end - loadaddress)
+        else:
+            rem = bytes()
+
+        # find out if we have the extra field in the autoload info
+        # (why did nintendo do this to me)
+        if self.dsi_autoload_sections is not None:
+            # we are working with DSi-compatible code...
+            # we have the extra field.
+            autoload_fun = AutoloadSectionInfo.from_bytes_dsi
+            autoload_size = 16
+        else:
+            autoload_fun = AutoloadSectionInfo.from_bytes_ds
+            autoload_size = 12
+
+        au_secs_offs: Optional[Tuple[int, int]] = getattr(self, dp + "autoload_sections")
+        au_start: Optional[int] = getattr(self, dp + "autoload_start") - loadaddress
+        if au_secs_offs is not None and au_start is not None:
+            au_secs: Sequence[AutoloadSectionInfo] = [autoload_fun(code, off - loadaddress) for off in range(au_secs_offs[0], au_secs_offs[1], autoload_size)]
+            cur_off = 0
+            def get_amount(amount: int) -> bytes:
+                nonlocal cur_off
+                ret = code[cur_off:cur_off + amount]
+                cur_off += amount
+                return ret
+            ret_seq: Sequence[Tuple[bytes, Optional[AutoloadSectionInfo]]] = []
+            ret_seq.append((get_amount(au_start), None))
+            ret_seq.extend(
+                (get_amount(au.size), au)
+                for au in au_secs
+            )
+            ret_seq.append((code[cur_off:], None))
+            return (ret_seq, rem)
+        else:
+            return ([(code, None)], rem)
+
+    def pack_code_from_sections(
+        self,
+        data: Tuple[Sequence[Tuple[bytes, Optional[AutoloadSectionInfo]]], bytes],
+        loadaddress: int,
+        which: Literal["9"] | Literal["7"],
+        is_dsi: bool = False,
+        try_compress: Optional[bool] = None,
+        autoload_info_write_mode: Literal["overwrite"] | Literal["overwrite_and_expand"] | Literal["append"] = "overwrite",
+    ) -> bytes:
+        """
+        Given sections in the format returned by get_sections, pack the code back together.
+
+        This method modifies the autoload fields of this structure according to the supplied parameters.
+        After the code is re-packed, the "write_start_info" method should be called on the non-DSi code
+        to write the new autoload fields.
+
+        If the try_compress parameter is None, then this method will try to compress the code
+        if it was previously compressed. Some games do not contain the code necessary to decompress
+        code. Be cautious of setting this to True.
+
+        The autoload_info_write_mode parameter dictates how the autoload section info
+        is inserted in the code. If the value is "overwrite", then this method
+        will only overwrite the sections if there is enough room where the section
+        info was previously. If there is not enough room, a ValueError will be raised.
+        If the value is "overwrite_and_expand", then the method
+        will push back the data after the autoload section info, if necessary.
+        If the value is "append", then the autoload section info will be appended to the end of
+        the code.
+        """
+        dp = "dsi_" if is_dsi else ""
+
+        seq, rem = data
+
+        if try_compress is None:
+            try_compress = getattr(self, dp + "compressed_end") is not None
+
+        if self.dsi_autoload_sections is not None:
+            # we are working with DSi-compatible code...
+            # we have the extra field.
+            autoload_fun = AutoloadSectionInfo.to_bytes_dsi
+            autoload_size = 16
+        else:
+            autoload_fun = AutoloadSectionInfo.to_bytes_ds
+            autoload_size = 12
+
+        autoload_sec_info = b''.join(autoload_fun(au, len(bts)) for bts, au in seq[1:-1]) # type: ignore
+        old_au_start, old_au_end = getattr(self, dp + "autoload_sections")
+        if autoload_info_write_mode == "overwrite":
+            if len(autoload_sec_info) > old_au_end - old_au_start:
+                raise ValueError("autoload info write mode is overwrite, but there are now more autoload sections to write")
+            after_secs_data = autoload_sec_info + seq[-1][0][len(autoload_sec_info):]
+            au_secs_start = 0
+        elif autoload_info_write_mode == "overwrite_and_expand":
+            if len(autoload_sec_info) > old_au_end - old_au_start:
+                # expand
+                after_secs_data = autoload_sec_info + seq[-1][0][old_au_end - old_au_start:]
+            else:
+                # overwrite
+                after_secs_data = autoload_sec_info + seq[-1][0][len(autoload_sec_info):]
+            au_secs_start = 0
+        elif autoload_info_write_mode == "append":
+            au_secs_start = len(seq[-1][0])
+            after_secs_data = seq[-1][0] + autoload_sec_info
+        uncompressed_code = b''.join(bts for bts, _ in seq[:-1])
+        au_secs_start += len(uncompressed_code) + loadaddress
+        uncompressed_code += after_secs_data
+        au_secs_end = au_secs_start + (len(seq) - 2) * autoload_size
+        au_start = len(seq[0][0]) + loadaddress
+        hdr_len = 0 if is_dsi else CODE_HEADER_LEN_MAP[which]
+
+        ret = None
+        compressed_end = None
+        if try_compress:
+            maybe_compressed_code_post_header = compress_code(uncompressed_code[hdr_len:])
+            if maybe_compressed_code_post_header is not None:
+                ret = bytearray(uncompressed_code[:hdr_len] + maybe_compressed_code_post_header)
+                compressed_end = len(ret) + loadaddress
+        if ret is None:
+            ret = bytearray(uncompressed_code)
+
+        setattr(self, dp + "autoload_sections", (au_secs_start, au_secs_end))
+        setattr(self, dp + "autoload_start", au_start)
+        setattr(self, dp + "compressed_end", compressed_end)
+
+        return bytes(ret) + rem
+
+    def write_start_info(self, code: bytes, loadaddress: int, entrypoint: int | None = None) -> bytes:
+        """
+        Write the start info into the given code.
+        """
+        code_start_info_idx = code.find(START_INFO_SIGNATURE_DS)
+        code_rw = bytearray(code)
+        if code_start_info_idx == -1:
+            # assuming now that this isn't compressed code, and is in an old (pre-DSi) game.
+            # try to find start info by other means...
+            if self.compressed_end is not None:
+                raise ValueError("code is compressed, but the code does not support compression")
             if entrypoint is not None:
-                arm7_start_info_idx = try_find_start_info_no_signature(arm7, loadaddress, entrypoint, True)
-                if arm7_start_info_idx is None:
-                    return None
-                arm7i_autoload_sections = arm7i_autoload_start = arm7i_compressed_end = None
-                compressed_end = 0
-                sdk_version = None
-            else:
-                return None
-        else:
-            # because nintendo hates me specifically, this structure
-            # sometimes has the sdk version and sometimes
-            # it doesn't. we need to detect this case separately.
-            # under the assumption that in its place would be compression end address
-            # (which I have always found to be zero, but I'll check for it anyways),
-            # we check the highest-order byte of the word before the signature.
-            # if it is 5, then it is the version number.
-            # otherwise, assume it is compression info.
-            if arm7[arm7_start_info_idx - 1] == 5:
-                arm7_start_info_idx -= 4
-                sdk_version, = unpack_from("<I", arm7, arm7_start_info_idx)
-            else:
-                sdk_version = None
-
-            compressed_end, = unpack_from("<I", arm7, arm7_start_info_idx - 4)
-            if compressed_end == 0:
+                code_start_info_idx = try_find_start_info_no_signature(code, loadaddress, entrypoint, False)
+                if code_start_info_idx is None:
+                    raise ValueError("failed to find code start info")
                 compressed_end = None
-            arm7_start_info_idx -= 24
-
-            # we should be on a DSi ROM with the other signature present
-            # as well...
-            arm7i_start_info_idx = arm7.find(START_INFO_SIGNATURE_DSI)
-            if arm7i_start_info_idx == -1:
-                arm7i_autoload_sections = arm7i_autoload_start = arm7i_compressed_end = None
-                print(f"found unexpected case of ARM7 code.\nplease report the game this function was called on to m@jamespetersen.ca")
             else:
-                au7_secs_start, au7_secs_end, arm7i_autoload_start, arm7i_compressed_end = \
-                    unpack_from("<4I", arm7, arm7i_start_info_idx - 16)
-                arm7i_autoload_sections = (au7_secs_start, au7_secs_end)
+                raise ValueError("failed to find code start info")
+        else:
+            if self.compressed_end is None:
+                compressed_end = 0
+            else:
+                compressed_end = self.compressed_end
+            code_start_info_idx -= 28
 
-        au_secs_start, au_secs_end, au_start, bss_start, bss_end = \
-            unpack_from("<5I", arm7, arm7_start_info_idx)
-        return ArmStartParams(
-            (au_secs_start, au_secs_end),
-            au_start,
-            (bss_start, bss_end),
-            compressed_end if compressed_end != 0 else None,
-            sdk_version,
-            arm7i_autoload_sections,
-            arm7i_autoload_start,
-            arm7i_compressed_end,
-        )
+        if compressed_end is None:
+            pack_into("<5I", code_rw, code_start_info_idx, *self.autoload_sections, self.autoload_start, *self.bss_bounds)
+        else:
+            pack_into("<6I", code_rw, code_start_info_idx, *self.autoload_sections, self.autoload_start, *self.bss_bounds, self.compressed_end)
 
+        codei_start_info_idx = code.find(START_INFO_SIGNATURE_DSI)
+        if codei_start_info_idx == -1:
+            if self.dsi_autoload_start is not None or self.dsi_compressed_end is not None or self.dsi_autoload_sections is not None:
+                raise ValueError("DSi code has been packed, but there is no DSi start info structure")
+        else:
+            if self.dsi_compressed_end is None:
+                dsi_compressed_end = 0
+            else:
+                dsi_compressed_end = self.dsi_compressed_end
+            if self.dsi_autoload_sections is None or self.dsi_autoload_start is None:
+                raise ValueError("DSi structure is present in code but DSi autoload info addresses are None")
+            pack_into("<4I", code_rw, codei_start_info_idx - 16, *self.dsi_autoload_sections, self.dsi_autoload_start, dsi_compressed_end)
+
+        return bytes(code_rw)
 
 def try_find_start_info_no_signature(code: bytes, loadaddress: int, entrypoint: int, check_autoload: bool = False) -> Optional[int]:
     """
