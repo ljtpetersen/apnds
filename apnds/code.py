@@ -4,7 +4,7 @@
 # Licensed under MIT. See LICENSE
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from struct import pack, pack_into, unpack_from
 from typing import Literal, Optional, Tuple
@@ -173,7 +173,7 @@ class CodeStartParams:
             codei_compressed_end,
         )
 
-    def get_sections(self, code: bytes, loadaddress: int, is_dsi: bool = False) -> Tuple[Sequence[Tuple[bytes, Optional[AutoloadSectionInfo]]], bytes]:
+    def get_sections(self, code: bytes, loadaddress: int, is_dsi: bool = False) -> Tuple[MutableSequence[Tuple[bytes, Optional[AutoloadSectionInfo]]], bytes]:
         """
         Given the start information of some code, the code, and the load
         address of the code, split the code into sections.

@@ -619,7 +619,7 @@ class Overlay:
     """
     compressed_size: int
     """
-    The overlay's size when uncompressed, if it is compressed.
+    The overlay's size when compressed, if it is compressed.
     """
 
     def table_entry_data(self) -> MutableSequence[int]:
