@@ -304,6 +304,8 @@ class CodeStartParams:
         ret = None
         compressed_end = None
         if try_compress:
+            if len(uncompressed_code) & 3 != 0:
+                raise ValueError("code to compress is not word-aligned")
             maybe_compressed_code_post_header = compress_code(uncompressed_code[hdr_len:])
             if maybe_compressed_code_post_header is not None:
                 ret = bytearray(uncompressed_code[:hdr_len] + maybe_compressed_code_post_header)
