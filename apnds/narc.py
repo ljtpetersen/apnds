@@ -1,6 +1,6 @@
 # apnds/narc.py
 #
-# Copyright (C) 2025 James Petersen <m@jamespetersen.ca>
+# Copyright (C) 2025-2026 James Petersen <m@jamespetersen.ca>
 # Licensed under MIT. See LICENSE
 
 from .rom import get_filename_id_map, path_key_to_path, path_key
@@ -114,10 +114,10 @@ class Narc:
             coff += len(file)
             coff += -coff & 3
         fatb = pack("<4sII", b'BTAF', 12 + 8 * len(self.files), len(self.files)) + fatb_contents
-        def padded_file(file: bytes) -> bytes:
-            return file + b'\0' * (-len(file) & 3)
+        def padded_file(file: bytes, pad=b'\0') -> bytes:
+            return file + pad * (-len(file) & 3)
         fimg = pack("<4sI", b'GMIF', coff + 8) + b''.join(padded_file(file) for file in self.files)
-        fntb = construct_fntb_forced_ids(self.filename_id_map)
+        fntb = padded_file(construct_fntb_forced_ids(self.filename_id_map), pad=b'\xFF')
         fntb = pack("<4sI", b'BTNF', 8 + len(fntb)) + fntb
 
         post_header = fatb + fntb + fimg
