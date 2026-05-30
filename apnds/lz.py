@@ -3,9 +3,16 @@
 # Copyright (C) 2025-2026 James Petersen <m@jamespetersen.ca>
 # Licensed under MIT. See LICENSE
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 def decompress(data: bytes) -> bytes:
+    """
+    Decompress LZ10-compressed data.
+
+    :param data: The data to be decompressed
+    :return: The decompressed data.
+    :raises ValueError: If the data is not valid LZ10-compressed data.
+    """
     if len(data) < 4:
         raise ValueError('cannot decompress less than 4 bytes of data')
 
@@ -52,6 +59,11 @@ def decompress_code(code: bytes, compressed_top: int) -> Tuple[bytes, bytes]:
     Decompress some code, given the top of the compressed code structure.
     This function will return the full decompressed code, as well as the data that is
     overwritten by the compressed code.
+
+    :param code: The code to be decompressed.
+    :param compressed_top: The offset within ``code`` at which the end of the compressed data lies.
+                           Often, this will be the end of the data.
+    :return: The decompressed data, and the remainder after the end of the compressed data, which is overwritten during decompression.
     """
     # this code is reverse-engineered from the decompression function
     # present in the C runtime of many DS games.
@@ -85,6 +97,15 @@ def decompress_code(code: bytes, compressed_top: int) -> Tuple[bytes, bytes]:
     return (bytes(c), rem)
 
 def compress(data: bytes, min_distance: int = 2, forward_iteration: bool = True, pad: bool = True) -> bytes:
+    """
+    Compress LZ10-compressed data.
+
+    :param min_distance: The minimum distance to look for blocks.
+    :param forward_iteration: Whether to iterate forward or backwards for blocks.
+    :param pad: Whether to pad the output, so that it lies on a 4-byte boundary.
+    :return: The compressed data.
+    :raises ValueError: If the data to be compressed is empty.
+    """
     if len(data) == 0:
         raise ValueError('cannot compress zero bytes')
 
@@ -175,13 +196,13 @@ def compress(data: bytes, min_distance: int = 2, forward_iteration: bool = True,
 
                 return bytes(ret[:dest_pos])
 
-def compress_code(code: bytes) -> bytes | None:
+def compress_code(code: bytes) -> Optional[bytes]:
     """
-    Given some code, compress it according to the modified lz10
-    encryption used for code compression.
+    Given some code, compress it according to the modified LZ10
+    algorithm used for code compression.
 
-    Returns None if the compressed size would be larger than the regular
-    size.
+    :param code: The code to be compressed.
+    :return: The compressed code, if its size would be smaller than the original code.
     """
 
     def find_best_block(needle: bytes, haystack: bytes) -> Tuple[int, int]:
@@ -239,7 +260,7 @@ def compress_code(code: bytes) -> bytes | None:
 
     i = compressed_size
     orig_pos = len(code)
-    def iterate_overwrite() -> Tuple[int, int] | None:
+    def iterate_overwrite() -> Optional[Tuple[int, int]]:
         nonlocal orig_pos
         nonlocal i
 

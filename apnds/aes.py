@@ -3,6 +3,13 @@
 # Copyright (C) 2026 James Petersen <m@jamespetersen.ca>
 # Licensed under MIT. See LICENSE
 
+"""
+:synopsis: Implementation of *AES-CTR* for MODCRYPT.
+
+The ``aes`` package includes a single important function, ``aes_ctr``, which is used by
+the ``rom`` package to handle MODCRYPT encryption.
+"""
+
 from collections.abc import MutableSequence, Sequence
 
 # this implementation is copied from tiny-AES-c, which is public domain.
@@ -129,6 +136,21 @@ def state_to_buf(state: State) -> bytes:
     return bytes(c for r in state for c in r)
 
 def aes_ctr(key: bytes, iv: bytes, data: bytes, reverse_xor_mask: bool = False) -> bytes:
+    """
+    Encrypt or decrypt code accoring to the AES-CTR algorithm.
+    This is a symmetric algorithm, so encryption and decryption
+    are identical processes.
+
+    The reverse_xor_mask parameter is necessary because the Nintendo
+    DSi implementation of this algorithm, which is used for MODCRYPT,
+    has the XOR mask reversed.
+
+    :param key: The AES-CTR key.
+    :param iv: The AES-CTR initial value.
+    :param data: The data to encrypt or decrypt.
+    :param reverse_xor_mask: Whether to reverse the XOR mask when processing each byte.
+    :return: the encrypted or decrypted data.
+    """
     round_key = key_expansion(key)
     buf = b''
     iv_m = bytearray(iv)

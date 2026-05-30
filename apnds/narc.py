@@ -3,12 +3,18 @@
 # Copyright (C) 2025-2026 James Petersen <m@jamespetersen.ca>
 # Licensed under MIT. See LICENSE
 
+"""
+:synopsis: Manipulation of NARC files.
+
+The ``narc`` package contains a single structure, whose purpose is to handle `NARC` files.
+"""
+
 from .rom import get_filename_id_map, path_key_to_path, path_key
 
 from collections.abc import Mapping, MutableMapping, MutableSequence
 from dataclasses import dataclass
 from struct import pack, pack_into, unpack_from
-from typing import Tuple
+from typing import Optional, Tuple
 
 HEADER_MAGIC = 0x4352414E
 HEADER_LE_BOM = 0xFFFE
@@ -19,7 +25,7 @@ def construct_fntb_forced_ids(filename_id_map: Mapping[str, int]) -> bytes:
     contents = bytes()
 
     cur_dir = tuple()
-    dir_map: MutableMapping[Tuple[str, ...], Tuple[int, MutableSequence[Tuple[str, int | None]]]] = {}
+    dir_map: MutableMapping[Tuple[str, ...], Tuple[int, MutableSequence[Tuple[str, Optional[int]]]]] = {}
     dir_map[()] = (0xF000, [])
 
     # within a directory, this will sort files by their id.
@@ -67,11 +73,118 @@ def construct_fntb_forced_ids(filename_id_map: Mapping[str, int]) -> bytes:
 
 @dataclass
 class Narc:
+    """
+    :synopsis: An unpacked NARC file.
+
+    This class represents the contents of a NARC file in an accessible way.
+    The original structure of a NARC file is documented below, in a C-like structure format.
+
+    .. code-block:: c
+
+       struct Narc {
+           struct NarcHeader header;
+           struct Fatb fatb;
+           struct Fntb fntb;
+           struct Fimg fimg;
+       };
+
+       struct NarcHeader {
+           // 'NARC'
+           u8 magic[4];
+           // byte order mark. value of 0xFFFE. This package requires little-endian.
+           u16 bom;
+           // NARC version? Always expect 0x100.
+           u16 version;
+           // the size of the archive.
+           u32 size;
+           // (always 0x10)
+           u16 header_size;
+           // (always 3)
+           u16 num_sections;
+       };
+
+       struct Fatb {
+           // 'FATB' in little-endian
+           u32 magic;
+           // total length of FATB, including magic.
+           u32 length;
+           u32 num_file_entries;
+           struct {
+               // offsets within the file_contents of the FIMG.
+               u32 start_off, end_off;
+           } file_entries[num_file_entries];
+       };
+
+       struct Fntb {
+           // 'FNTB' in little-endian
+           u32 magic;
+           // total length of FNTB, including magic.
+           u32 length;
+           struct {
+               struct {
+                   // offset of contents from start of header
+                   u32 contents_offset;
+                   // the file id of the first file in the directory
+                   // following file ids are consecutive within the directory
+                   u16 first_file_id;
+                   // the id of the parent directory. for the root, this is
+                   // the number of directory entries.
+                   u16 parent_id;
+               } directory_entries[number of directory entries];
+           } header;
+           struct {
+               struct {
+                   // children are null-terminated
+                   union {
+                       struct {
+                           u8 name_length:7;
+                           u8 is_dir:1;
+                           u8 name[name_length];
+                           // there is a dir_id if is_dir == 1.
+                           union {
+                               struct {
+                                   u32 dir_id:24;
+                                   u32 always_0xF:8;
+                               } dir_id;
+                               struct {} nothing;
+                           } dir_id_or_nothing;
+                       } child;
+                       u8 null_terminator;
+                   } children[number of children];
+               } directory_contents[number of directory entries];
+           } contents;
+       };
+
+       struct Fimg {
+           // 'FIMG' in little-endian
+           u32 magic;
+           // total length of FIMG, including magic.
+           u32 length;
+           struct {
+               u8 contents[length of file];
+               // padded to a 4-byte boundary.
+               u8 padding[];
+           } file_contents[number of files];
+       };
+    """
     files: MutableSequence[bytes]
+    """
+    The files within the NARC.
+    """
     filename_id_map: MutableMapping[str, int]
+    """
+    A map of file paths to indices within the array of files.
+    """
 
     @staticmethod
     def from_bytes(data: bytes) -> "Narc":
+        """
+        Decompose the bytes of a NARC file.
+
+        :param data: The bytes to decompose.
+        :return: The decomposed NARC.
+        :raises ValueError: If the data is not a valid NARC file.
+        """
         magic, bom, version, size, header_size = unpack_from("<IHHIH", data, 0)
         
         if magic != HEADER_MAGIC:
@@ -96,7 +209,7 @@ class Narc:
 
         fimg_pos = fntb_pos + fntb_len
         if data[fimg_pos:fimg_pos + 4] != b'GMIF':
-            raise ValueError("data is not valid NARC. FING magic does not match")
+            raise ValueError("data is not valid NARC. FIMG magic does not match")
         off = fimg_pos + 8
 
         file_data = data[off:]
@@ -107,6 +220,13 @@ class Narc:
         return Narc(files, filename_id_map)
 
     def to_bytes(self) -> bytes:
+        """
+        Pack the archive into NARC format.
+
+        :return: The packed NARC.
+        :raises ValueError: If there is a directory within which the file ids cannot
+                            be arranged in consecutive order.
+        """
         fatb_contents = bytearray(8 * len(self.files))
         coff = 0
         for i, file in enumerate(self.files):

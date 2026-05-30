@@ -3,6 +3,14 @@
 # Copyright (C) 2026 James Petersen <m@jamespetersen.ca>
 # Licensed under MIT. See LICENSE
 
+"""
+:synopsis: Structures involving ARM9, ARM9i, ARM7, and ARM7i code.
+
+The ``code`` package contains structures to parse the start params used within
+the C runtimes of the ARM9 and ARM7 code. Using this data, it can then decompress the code
+and split it into its automatically loaded sections. These can then be manipulated and reconstituted.
+"""
+
 from collections import defaultdict
 from collections.abc import Mapping, MutableSequence, Sequence
 from dataclasses import dataclass
@@ -21,10 +29,30 @@ CODE_HEADER_LEN_MAP: Mapping[Literal["7"] | Literal["9"], int] = {
 @dataclass
 class AutoloadSectionInfo:
     """
+    :synopsis: Information about a single automatically-loaded code section.
+
     Certain sections of the code are automatically loaded
     to other memory addresses when the game starts.
     This class contains the information about one of these
     sections.
+
+    This structure is found in two formats. The first is present in DS ROMs,
+    and the second is present in some DSi ROMs.
+
+    .. code-block:: c
+
+       struct DSAutoloadSectionInfo {
+           u32 destination;
+           u32 size;
+           u32 bss_size;
+       };
+
+       struct DSiAutoloadSectionInfo {
+           u32 destination;
+           u32 size;
+           u32 static_init_func_ptr;
+           u32 bss_size;
+       };
     """
 
     destination: int
@@ -40,7 +68,7 @@ class AutoloadSectionInfo:
     How large the BSS data after this section's code is.
     The BSS data will be zeroed.
     """
-    static_init_fun_ptr: int | None = None
+    static_init_fun_ptr: Optional[int] = None
     """
     A pointer to the static initialization function called
     after for this section, after all sections are loaded.
@@ -50,11 +78,25 @@ class AutoloadSectionInfo:
     """
     
     @staticmethod
-    def from_bytes_ds(code: bytes, offset: int) -> "AutoloadSectionInfo":
+    def from_bytes_ds(code: bytes, offset: int = 0) -> "AutoloadSectionInfo":
+        """
+        Parse the autoload section info from bytes, assuming they are in the DS structure format.
+
+        :param code: The data which contains the autoload section info.
+        :param offset: The offset within the data at which the section info is.
+        :return: The parsed autoload section info.
+        """
         return AutoloadSectionInfo(*unpack_from("<3I", code, offset))
 
     @staticmethod
-    def from_bytes_dsi(code: bytes, offset: int) -> "AutoloadSectionInfo":
+    def from_bytes_dsi(code: bytes, offset: int = 0) -> "AutoloadSectionInfo":
+        """
+        Parse the autoload section info from bytes, assuming they are in the DSi structure format.
+
+        :param code: The data which contains the autoload section info.
+        :param offset: The offset within the data at which the section info is.
+        :return: The parsed autoload section info.
+        """
         return AutoloadSectionInfo(**{
             k:v
             for k, v in zip(
@@ -64,11 +106,23 @@ class AutoloadSectionInfo:
         })
 
     def to_bytes_ds(self, size: Optional[int] = None) -> bytes:
+        """
+        Pack the autoload section info into a DS-format structure.
+
+        :param size: The size of the section. If not supplied, the size present in the class will be used.
+        :return: The packed structure.
+        """
         if size is None:
             size = self.size
         return pack("<3I", self.destination, size, self.bss_size)
 
     def to_bytes_dsi(self, size: Optional[int] = None) -> bytes:
+        """
+        Pack the autoload section info into a DSi-format structure.
+
+        :param size: The size of the section. If not supplied, the size present in the class will be used.
+        :return: The packed structure.
+        """
         if size is None:
             size = self.size
         if self.static_init_fun_ptr is None:
@@ -80,7 +134,48 @@ class AutoloadSectionInfo:
 @dataclass
 class CodeStartParams:
     """
-    This structure contains the start parameters of the code.
+    :synopsis: The start parameters of ARM9 or ARM7 code.
+
+    This class contains the start parameters of the code.
+    The start parameters are a structure present in ARM9 and ARM7
+    code, within officially released DS and DSi games.
+    It is located within the C runtime, so it will never be compressed. I have
+    found two versions of it.
+
+    .. code-block:: c
+       
+       struct DSNoCompressionStartParams {
+           DSAutoloadSectionInfo *au_sec_info_start, *au_sec_info_end;
+           void *au_secs_start;
+           void *bss_start, *bss_end;
+       };
+
+       struct DSStartParams {
+           // if the DSiStartParams structure is present, then
+           // these are instead pointers to DSiAutoloadSectionInfo.
+           DSAutoloadSectionInfo *au_sec_info_start, *au_sec_info_end;
+           void *au_secs_start;
+           void *bss_start, *bss_end;
+           void *compressed_data_end;
+           u32 sdk_version_id;
+           // magic0, magic1 together make the hex byte sequence 2106C0DEDEC00621
+           u32 magic0, magic1;
+       };
+
+    Within some (all?) DSi ROMs, the following structure may also be present. If it is,
+    then the autoload section information will be in the DSi format for both
+    the DS and DSi structures. The DSi structure is only relating to the
+    ARM9i or ARM7i code.
+
+    .. code-block:: c
+       
+       struct DSiStartParams {
+           DSiAutoloadSectionInfo *au_sec_info_start, *au_sec_info_end;
+           void *au_secs_start;
+           void *compressed_data_end;
+           // magic0, magic1 together make the hex byte sequence 6314C0DEDEC01463
+           u32 magic0, magic1;
+       };
     """
 
     autoload_sections: Tuple[int, int]
@@ -133,6 +228,11 @@ class CodeStartParams:
         the C runtime for this structure. In this case, the sdk_version
         field will be None. For more details on this,
         see the try_find_start_info_no_signature function.
+
+        :param code: The code from which to parse the starting parameters. This should be the ARM9 or ARM7 code.
+        :param loadaddress: The address at which this code is loaded.
+        :param entrypoint: The entrypoint of the code. This is only used for DS code which has the no compression version of the structure.
+        :return: The code start parameters, if they could be found.
         """
         code_start_info_idx = code.find(START_INFO_SIGNATURE_DS)
         if code_start_info_idx == -1:
@@ -182,12 +282,22 @@ class CodeStartParams:
 
         This function returns the sections, and the data that would
         be overwritten when decompressing, if the code is compressed.
-        In the sections, the first (and maybe last) elements
-        will be the code that is not automatically loaded,
-        whether it is before or after any section. These
-        two will not have an AutoloadSectionInfo.
-        All middle elements of the sections will have an
-        AutoloadSectionInfo.
+
+        :param code: The code from which to get the sections.
+                     This should correspond to the code these start parameters were obtained from.
+                     For ARM9, ARM9 or ARM9i code. Similarly for ARM7.
+        :param loadaddress: The address at which the code is loaded.
+        :param is_dsi: Whether the code is DSi code (ARM9i or ARM7i).
+        :return: The automatically loaded sections. The first member of the tuple is the sequence of sections. The first and last
+                 entries of the sequence will not have section info; they correspond to the code before and after the sections.
+                 All other entries in the sequence will have section info.
+
+                 The second member of the tuple is the data which was in the code but after the compressed data,
+                 so that it is overwritten when decompressed. If the code is not compressed, this will be empty.
+
+                 If the autoload section info or autoload start fields are None for this code, then 
+                 ``([(decompressed, None)], rem)`` will be returned, where ``rem`` is the remainder after
+                 decompression, and ``decompressed`` is the decompressed code.
         """
 
         # decompress the code
@@ -244,21 +354,30 @@ class CodeStartParams:
         Given sections in the format returned by get_sections, pack the code back together.
 
         This method modifies the autoload fields of this structure according to the supplied parameters.
-        After the code is re-packed, the "write_start_info" method should be called on the non-DSi code
+        After the code is re-packed, the ``CodeStartParams.write_start_info`` method should be called on the non-DSi code
         to write the new autoload fields.
 
-        If the try_compress parameter is None, then this method will try to compress the code
-        if it was previously compressed. Some games do not contain the code necessary to decompress
-        code. Be cautious of setting this to True.
+        :param data: The data to be packed. This should be in the same format as returned by ``CodeStartParams.get_sections``.
+        :param loadaddress: The address at which the code is loaded.
+        :param which: Whether this code is ARM9 or ARM7 code.
+        :param is_dsi: Whether this code is DS or DSi code.
+        :param try_compress: Whether to try or compress the code or not. If this parameter is not supplied, then compression will be tried
+                             only if the code was originally compressed. If setting this parameter to ``True``, ensure that the ``compressed_data_end``
+                             field is present in the start parameters structure in the code.
+        :param autoload_info_write_mode: How the autoload section info is inserted in the code.
 
-        The autoload_info_write_mode parameter dictates how the autoload section info
-        is inserted in the code. If the value is "overwrite", then this method
-        will only overwrite the sections if there is enough room where the section
-        info was previously. If there is not enough room, a ValueError will be raised.
-        If the value is "overwrite_and_expand", then the method
-        will push back the data after the autoload section info, if necessary.
-        If the value is "append", then the autoload section info will be appended to the end of
-        the code.
+                                         If the value is "overwrite", then this method
+                                         will only overwrite the sections if there is enough room where the section
+                                         info was previously. If there is not enough room, a ValueError will be raised.
+
+                                         If the value is "overwrite_and_expand", then the method
+                                         will push back the data after the autoload section info, if necessary.
+
+                                         If the value is "append", then the autoload section info will be appended to the end of
+                                         the code.
+        :return: The packed code.
+        :raises ValueError: If the code is to be compressed, but after combining all the sections, it is not padded to a 4-byte boundary.
+        :raises ValueError: If ``autoload_info_write_mode`` is ``overwrite`` and there is not enough room in the original structure to overwrite it.
         """
         dp = "dsi_" if is_dsi else ""
 
@@ -319,9 +438,17 @@ class CodeStartParams:
 
         return bytes(ret) + rem
 
-    def write_start_info(self, code: bytes, loadaddress: int, entrypoint: int | None = None) -> bytes:
+    def write_start_info(self, code: bytes, loadaddress: int, entrypoint: Optional[int] = None) -> bytes:
         """
         Write the start info into the given code.
+
+        :param code: The code within which to write the start parameters.
+        :param loadaddress: The address at which the code is loaded.
+        :param entrypoint: The entrypoint at which the code is loaded. This is only used for DS code which has the no compression version of the structure.
+        :return: The modified code.
+        :raises ValueError: If the start parameters structure can not be found within the code,
+                            or if the code was compressed but the ``compressed_data_end`` field
+                            is not in the structure.
         """
         code_start_info_idx = code.find(START_INFO_SIGNATURE_DS)
         code_rw = bytearray(code)

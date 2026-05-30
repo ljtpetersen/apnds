@@ -3,13 +3,21 @@
 # Copyright (C) 2025-2026 James Petersen <m@jamespetersen.ca>
 # Licensed under MIT. See LICENSE
 
+"""
+:synopsis: Classes relating to Nintendo DS ROMs, their headers, and overlays.
+
+This package contains code to pack and unpack Nintendo DS and DSi ROMs,
+including decrypting DSi MODCRYPT (but not DS secure areas). It also contains structures
+for manipulating ROM headers.
+"""
+
 from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from itertools import chain
 from queue import SimpleQueue
 from struct import pack, pack_into, unpack_from
-from typing import Literal, Tuple
+from typing import Literal, Optional, Tuple
 
 from .aes import aes_ctr
 from .code import get_start_info_offset
@@ -30,6 +38,8 @@ MAX_CAPSHIFT_MROM = 10
 
 class HeaderField(IntEnum):
     """
+    :synopsis: The offsets of fields within DS and DSi ROM headers.
+
     These are the fields of the header, and their corresponding offsets.
     The length of each entry is the difference of its successor's offset with it.
     """
@@ -38,26 +48,53 @@ class HeaderField(IntEnum):
     The title of the ROM. This should be null-terminated ASCII.
     """
     SERIAL = 0x00C
+    """
+    Game code.
+    """
     MAKER = 0x010
+    """
+    Maker code.
+    """
     UNITCODE = 0x012
+    """
+    Unit code. 0 for DS, 2 for DS or DSi, 3 for DSi.
+    """
     ENCRYPTION_SEED_SELECT = 0x013
+    """
+    Encryption seed select.
+    """
     CHIPCAPACITY = 0x014
     """
     This is computed and set automatically when converting the ROM to bytes.
     """
     RESERVED_015 = 0x015
+    """
+    Reserved.
+    """
     DSI_FLAGS = 0x01C
     """
     The second bit is cleared when converting the ROM to bytes.
     """
     NDS_REGION_DSI_PERMIT_JUMP = 0x01D
+    """
+    Permit jump?
+    """
     REVISION = 0x01E
+    """
+    Game revision.
+    """
     ARM9_ROMOFFSET = 0x020
     """
     This is computed and set automatically when converting the ROM to bytes.
     """
     ARM9_ENTRYPOINT = 0x024
+    """
+    Entrypoint of the ARM9 processor.
+    """
     ARM9_LOADADDR = 0x028
+    """
+    Load address of the ARM9 code.
+    """
     ARM9_LOADSIZE = 0x02C
     """
     This is computed and set automatically when converting the ROM to bytes.
@@ -67,7 +104,13 @@ class HeaderField(IntEnum):
     This is computed and set automatically when converting the ROM to bytes.
     """
     ARM7_ENTRYPOINT = 0x034
+    """
+    Entrypoint of the ARM7 processor.
+    """
     ARM7_LOADADDR = 0x038
+    """
+    Load address of the ARM7 code.
+    """
     ARM7_LOADSIZE = 0x03C
     """
     This is computed and set automatically when converting the ROM to bytes.
@@ -105,15 +148,37 @@ class HeaderField(IntEnum):
     This is computed and set automatically when converting the ROM to bytes.
     """
     ROMCTRL_DEC = 0x060
+    """
+    Port 0x40001A4 setting for normal commands.
+    """
     ROMCTRL_ENC = 0x064
+    """
+    Port 0x40001A4 setting for KEY1 commands.
+    """
     BANNER_ROMOFFSET = 0x068
     """
     This is computed and set automatically when converting the ROM to bytes.
     """
     SECURECRC = 0x06C
+    """
+    Secure area CRC.
+    """
     SECURE_DELAY = 0x06E
+    """
+    Secure area delay.
+    """
     ARM9_AUTOLOADCB = 0x070
+    """
+    ARM9 autoload callback address.
+    """
     ARM7_AUTOLOADCB = 0x074
+    """
+    ARM7 autoload callback address.
+    """
+    SECURE_AREA_DISABLE = 0x078
+    """
+    Secure area disable.
+    """
     ROMSIZE = 0x080
     """
     This is computed and set automatically when converting the ROM to bytes.
@@ -143,39 +208,114 @@ class HeaderField(IntEnum):
     when the unit code is nonzero.
     """
     TWL_ROM_REGION_START_END = 0x094
+    """
+    For the length of ``TWL_ROM_REGION_START`` to be correctly calculated.
+    """
     HEADERCRC = 0x15E
     """
     This is computed and set automatically when converting the ROM to bytes.
     """
     DEBUG_ROM_SOURCE = 0x160
+    """
+    Debug ROM offset.
+    """
     DEBUG_ROM_SIZE = 0x164
+    """
+    Debug ROM size.
+    """
     DEBUG_ROM_DESTINATION = 0x168
+    """
+    Debug ROM destination.
+    """
     UNK_16C = 0x16C
+    """
+    Unknown.
+    """
     ZEROS_170 = 0x170
+    """
+    Zeros.
+    """
     MBK_GLOBAL_1 = 0x180
+    """
+    Global MBK 1.
+    """
     MBK_GLOBAL_2 = 0x184
+    """
+    Global MBK 2.
+    """
     MBK_GLOBAL_3 = 0x188
+    """
+    Global MBK 3.
+    """
     MBK_GLOBAL_4 = 0x18C
+    """
+    Global MBK 4.
+    """
     MBK_GLOBAL_5 = 0x190
+    """
+    Global MBK 5.
+    """
     MBK_ARM9_6 = 0x194
+    """
+    ARM9 MBK 6.
+    """
     MBK_ARM9_7 = 0x198
+    """
+    ARM9 MBK 7.
+    """
     MBK_ARM9_8 = 0x19C
+    """
+    ARM9 MBK 8.
+    """
     MBK_ARM7_6 = 0x1A0
+    """
+    ARM7 MBK 6.
+    """
     MBK_ARM7_7 = 0x1A4
+    """
+    ARM7 MBK 7.
+    """
     MBK_ARM7_8 = 0x1A8
+    """
+    ARM7 MBK 8.
+    """
     MBK_WRAMCNT_SETTING = 0x1AC
+    """
+    Global WRAMCNT Setting.
+    """
     REGION_FLAGS = 0x1B0
+    """
+    Region flags.
+    """
     ACCESS_CONTROL = 0x1B4
+    """
+    Access control.
+    """
     SCFG_EXT7_MASK = 0x1B8
+    """
+    ARM7 SCFG_EXT7 mask.
+    """
     UNK_1BC = 0x1BC
+    """
+    Unknown.
+    """
     APPFLAGS = 0x1BF
+    """
+    Application flags.
+    """
     ARM9I_ROMOFFSET = 0x1C0
     """
     This is computed and set automatically when converting the ROM to bytes,
     when the unit code is nonzero.
     """
     RESERVED_1C4 = 0x1C4
+    """
+    Reserved.
+    """
     ARM9I_LOADADDR = 0x1C8
+    """
+    RAM load address of the ARM9i.
+    """
     ARM9I_LOADSIZE = 0x1CC
     """
     This is computed and set automatically when converting the ROM to bytes,
@@ -187,36 +327,84 @@ class HeaderField(IntEnum):
     when the unit code is nonzero.
     """
     UNK_1D4 = 0x1D4
+    """
+    Unknown.
+    """
     ARM7I_LOADADDR = 0x1D8
+    """
+    RAM load address of the ARM7i.
+    """
     ARM7I_LOADSIZE = 0x1DC
     """
     This is computed and set automatically when converting the ROM to bytes,
     when the unit code is nonzero.
     """
     DIGEST_NTR_START = 0x1E0
+    """
+    Digest NTR region offset.
+    """
     DIGEST_NTR_SIZE = 0x1E4
+    """
+    Digest NTR region size.
+    """
     DIGEST_TWL_START = 0x1E8
+    """
+    Digest TWL region offset.
+    """
     DIGEST_TWL_SIZE = 0x1EC
+    """
+    Digest TWL region size.
+    """
     SECTOR_HASHTABLE_START = 0x1F0
+    """
+    Digest sector hashtable offest.
+    """
     SECTOR_HASHTABLE_SIZE = 0x1F4
+    """
+    Digest sector hashtable size.
+    """
     BLOCK_HASHTABLE_START = 0x1F8
+    """
+    Digest block hashtable offset.
+    """
     BLOCK_HASHTABLE_SIZE = 0x1FC
+    """
+    Digest block hashtable size.
+    """
     DIGEST_SECTOR_SIZE = 0x200
+    """
+    Digest sector size.
+    """
     DIGEST_BLOCK_SECTORCOUNT = 0x204
+    """
+    Digest block sector count.
+    """
     BANNER_BSIZE = 0x208
     """
     This is computed and set automatically when converting the ROM to bytes,
     when the unit code is nonzero.
     """
     UNK_20C = 0x20C
+    """
+    Unknown
+    """
     TOTAL_ROMSIZE = 0x210
     """
     This is computed and set automatically when converting the ROM to bytes,
     when the unit code is nonzero.
     """
     UNK_214 = 0x214
+    """
+    Unknown
+    """
     UNK_218 = 0x218
+    """
+    Unknown
+    """
     UNK_21C = 0x21C
+    """
+    Unknown
+    """
     MODCRYPT1_START = 0x220
     """
     This is cleared when converting the ROM to bytes.
@@ -234,23 +422,77 @@ class HeaderField(IntEnum):
     This is cleared when converting the ROM to bytes.
     """
     TITLEID = 0x230
+    """
+    Title ID.
+    """
     PUBLIC_SAV_SIZE = 0x238
+    """
+    public.sav size.
+    """
     PRIVATE_SAV_SIZE = 0x23C
+    """
+    private.sav size.
+    """
     RESERVED_240 = 0x240
+    """
+    Reserved.
+    """
     AGE_RATINGS = 0x2F0
+    """
+    Age ratings.
+    """
     HMAC_ARM9 = 0x300
+    """
+    ARM9 HMAC.
+    """
     HMAC_ARM7 = 0x314
+    """
+    ARM7 HMAC.
+    """
     HMAC_DIGEST_MASTER = 0x328
+    """
+    Digest Master HMAC.
+    """
     HMAC_ICON_TITLE = 0x33C
+    """
+    Icon/Title HMAC.
+    """
     HMAC_ARM9I = 0x350
+    """
+    ARM9i HMAC.
+    """
     HMAC_ARM7I = 0x364
+    """
+    ARM7i HMAC.
+    """
     RESERVED_378 = 0x378
+    """
+    Reserved.
+    """
     RESERVED_38C = 0x38C
+    """
+    Reserved.
+    """
     HMAC_ARM9_WO_SECURE_AREA = 0x3A0
+    """
+    ARM9 HMAC without secure area.
+    """
     RESERVED_3B4 = 0x3B4
+    """
+    Reserved.
+    """
     RESERVED_E00 = 0xE00
+    """
+    Reserved.
+    """
     RSA_SIGNATURE = 0xF80
+    """
+    RSA signature.
+    """
     RESERVED_1000 = 0x1000
+    """
+    Reserved.
+    """
     ENTIRE_HEADER = 0x4000
     """
     This is the size of the entire header.
@@ -260,6 +502,8 @@ class HeaderField(IntEnum):
         """
         Given a header field, this returns the subsequent header field.
         For ENTIRE_HEADER, it returns ENTIRE_HEADER.
+
+        :return: The successor of this header field.
         """
         match self:
             case HeaderField.TITLE:
@@ -327,6 +571,8 @@ class HeaderField(IntEnum):
             case HeaderField.ARM9_AUTOLOADCB:
                 return HeaderField.ARM7_AUTOLOADCB
             case HeaderField.ARM7_AUTOLOADCB:
+                return HeaderField.SECURE_AREA_DISABLE
+            case HeaderField.SECURE_AREA_DISABLE:
                 return HeaderField.ROMSIZE
             case HeaderField.ROMSIZE:
                 return HeaderField.HEADERSIZE
@@ -486,6 +732,8 @@ class HeaderField(IntEnum):
     def len(self) -> int:
         """
         This is the length of this header field, computed by `self.succ() - self`.
+
+        :return: The length of this header field.
         """
         if self == HeaderField.ENTIRE_HEADER:
             return self
@@ -494,8 +742,10 @@ class HeaderField(IntEnum):
 
 class Header:
     """
-    This is the header of a DS ROM. Its fields can be accessed using indexing notation:
-    `header[HeaderField.TITLE]` will return the title, in bytes.
+    :synopsis: The header of a DS or DSi ROM.
+
+    This is the header of a DS or DSi ROM. Its fields can be accessed using indexing notation:
+    ``header[HeaderField.TITLE]`` will return the title, in bytes.
     """
     data: bytearray
     """
@@ -504,7 +754,10 @@ class Header:
 
     def __init__(self, data: bytes):
         """
-        Initialize a header with some underlying data. The length of the data must be 0x4000 bytes.
+        Initialize a header with some underlying data.
+
+        :param data: The header data.
+        :raises ValueError: If the length of the data is not ``0x4000``.
         """
         if len(data) != HeaderField.ENTIRE_HEADER:
             raise ValueError("header data is of incorrect length (expected 0x4000 bytes)")
@@ -513,6 +766,9 @@ class Header:
     def __getitem__(self, key: HeaderField) -> bytes:
         """
         Get a field from the header as bytes.
+
+        :param key: The header field to get.
+        :return: The header field.
         """
         if key == HeaderField.ENTIRE_HEADER:
             return bytes(self.data)
@@ -523,6 +779,9 @@ class Header:
         """
         Set a field from the header from bytes or an integer. If an integer
         is passed, it is interpreted as little endian.
+
+        :param key: The header field to set.
+        :param value: The value to set it to.
         """
         if isinstance(value, int):
             value = value.to_bytes(key.len(), 'little')
@@ -534,6 +793,9 @@ class Header:
     def get_le(self, key: HeaderField) -> int:
         """
         Get a field from the header as an integer. It is interpreted as little endian.
+
+        :param key: The header field to get.
+        :return: The value of the header field, interpreted as a little-endian integer.
         """
         if key == HeaderField.ENTIRE_HEADER:
             return int.from_bytes(self.data, 'little')
@@ -544,6 +806,11 @@ class Header:
         """
         Given the entire ROM, the field corresponding to the offset in the ROM, and the
         field corresponding to the binary size in the ROM, return the region in the ROM.
+
+        :param rom: The ROM.
+        :param offset: The field containing the ROM offset of the region.
+        :param length: The field containing the length of the region.
+        :return: The region.
         """
         off = self.get_le(offset)
         return rom[off:off + self.get_le(length)]
@@ -592,7 +859,22 @@ def get_filename_id_map(fntb: bytes) -> MutableMapping[str, int]:
 @dataclass
 class Overlay:
     """
-    This is a single overlay.
+    :synopsis: This is a single overlay.
+
+    .. code-block:: c
+       
+       struct Overlay {
+           u32 id;
+           u32 ram_address;
+           u32 ram_size;
+           u32 bss_size;
+           u32 sinit_init;
+           u32 sinit_init_end;
+           u32 file_id;
+           u32 compressed_size:24;
+           // first bit is whether it is compressed
+           u32 flags:8;
+       };
     """
     id: int
     """
@@ -607,8 +889,17 @@ class Overlay:
     This is the RAM size of the overlay when loaded.
     """
     bss_size: int
+    """
+    BSS size.
+    """
     sinit_init: int
+    """
+    Static init.
+    """
     sinit_init_end: int
+    """
+    Static init end..
+    """
     data: bytes
     """
     This is the data of the overlay.
@@ -635,6 +926,11 @@ class Overlay:
         ]
 
     def is_compressed(self) -> bool:
+        """
+        Check if the overlay is compressed.
+
+        :return: If the overlay is compressed.
+        """
         return self.flags & 1 != 0
 
 def get_overlays(header: Header, rom: bytes, files: Sequence[bytes], which: Literal["9"] | Literal["7"]) -> MutableSequence[Overlay]:
@@ -688,13 +984,14 @@ def construct_fntb(filenames: Iterable[str], file_id_off: int) -> Tuple[bytes, M
 
     cur_dir = tuple()
     # path key -> dir id, seq of children (name, dir id or None)
-    dir_map: MutableMapping[Tuple[str, ...], Tuple[int, MutableSequence[Tuple[str, int | None]]]] = {}
+    dir_map: MutableMapping[Tuple[str, ...], Tuple[int, MutableSequence[Tuple[str, Optional[int]]]]] = {}
     dir_map[()] = (0xF000, [])
 
     def path_key_for_sorted(pk: Tuple[str, ...]) -> Tuple[str, ...]:
         return (*pk[:-1], '\0' + pk[-1])
 
     paths = sorted(map(path_key, filenames), key=path_key_for_sorted)
+    print('\n'.join(path_key_to_path(*pk) for pk in paths))
 
     for pk in paths:
         parent_dir = pk[:-1]
@@ -788,7 +1085,7 @@ def process_modcrypt(rom: bytes, header: Header) -> bytes:
 @dataclass
 class Rom:
     """
-    This is the decomposition of a DS ROM into its parts.
+    :synopsis: This is the decomposition of a DS ROM into its parts.
     """
     header: Header
     """
@@ -810,11 +1107,11 @@ class Rom:
     """
     These are the ARM7 overlays of the ROM.
     """
-    arm9i: bytes | None
+    arm9i: Optional[bytes]
     """
     This is the ARM9i code of the ROM, if it exists.
     """
-    arm7i: bytes | None
+    arm7i: Optional[bytes]
     """
     This is the ARM7i code of the ROM, if it exists.
     """
@@ -841,10 +1138,12 @@ class Rom:
         """
         Decompose a ROM into its components.
 
-        If decrypt_modcrypt is True, then the modcrypt areas are decrypted.
-        This should really only be set to False if working with a cartridge
-        that already has the areas decrypted, but whose modcrypt
-        regions haven't been cleared in the header.
+        :param rom: The ROM bytes.
+        :param decrypt_modcrypt: If true, then the modcrypt areas are decrypted.
+                                 This should really only be set to False if working with a cartridge
+                                 that already has the areas decrypted, but whose modcrypt
+                                 regions haven't been cleared in the header.
+        :return: The unpacked ROM.
         """
         header = Header(rom[:HeaderField.ENTIRE_HEADER])
 
@@ -905,6 +1204,11 @@ class Rom:
     def to_bytes(self, fill_tail: bool = True, fill_with: bytes = b'\xFF') -> bytes:
         """
         From the components of a ROM, construct the ROM.
+
+        :param fill_tail: Whether to fill the tail of the ROM to the power of 2 size.
+        :param fill_with: What to pad the ROM with.
+        :return: The packed ROM.
+        :raises ValueError: If ``fill_with`` is not of length 1.
         """
         if len(fill_with) != 1:
             raise ValueError(f"fill_with has length greater than 1")
@@ -1089,4 +1393,3 @@ class Rom:
         return bytes(header.data + post_header_bytes)
 
 __all__: list[str] = ['HeaderField', 'Header', 'Overlay', 'Rom']
-
