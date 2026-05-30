@@ -42,15 +42,15 @@ class AutoloadSectionInfo:
     .. code-block:: c
 
        struct DSAutoloadSectionInfo {
-           u32 destination;
+           void *destination;
            u32 size;
            u32 bss_size;
        };
 
        struct DSiAutoloadSectionInfo {
-           u32 destination;
+           void *destination;
            u32 size;
-           u32 static_init_func_ptr;
+           void *static_init_func_ptr;
            u32 bss_size;
        };
     """
@@ -145,7 +145,7 @@ class CodeStartParams:
     .. code-block:: c
        
        struct DSNoCompressionStartParams {
-           DSAutoloadSectionInfo *au_sec_info_start, *au_sec_info_end;
+           struct DSAutoloadSectionInfo *au_sec_info_start, *au_sec_info_end;
            void *au_secs_start;
            void *bss_start, *bss_end;
        };
@@ -153,7 +153,7 @@ class CodeStartParams:
        struct DSStartParams {
            // if the DSiStartParams structure is present, then
            // these are instead pointers to DSiAutoloadSectionInfo.
-           DSAutoloadSectionInfo *au_sec_info_start, *au_sec_info_end;
+           struct DSAutoloadSectionInfo *au_sec_info_start, *au_sec_info_end;
            void *au_secs_start;
            void *bss_start, *bss_end;
            void *compressed_data_end;
@@ -170,7 +170,7 @@ class CodeStartParams:
     .. code-block:: c
        
        struct DSiStartParams {
-           DSiAutoloadSectionInfo *au_sec_info_start, *au_sec_info_end;
+           struct DSiAutoloadSectionInfo *au_sec_info_start, *au_sec_info_end;
            void *au_secs_start;
            void *compressed_data_end;
            // magic0, magic1 together make the hex byte sequence 6314C0DEDEC01463

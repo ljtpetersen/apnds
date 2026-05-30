@@ -135,6 +135,10 @@ class Narc:
            struct {
                struct {
                    // children are null-terminated
+
+                   // this union is not padded. i.e., the size is simply
+                   // that of its value. so, a directory with no children
+                   // would just be a single byte, with value 0.
                    union {
                        struct {
                            u8 name_length:7;
