@@ -280,3 +280,5 @@ def compress_code(code: bytes) -> bytes | None:
         (total_len - before_padding).to_bytes(1, 'little'),
         (len(code) - total_len).to_bytes(4, 'little'),
     ))
+
+__all__: list[str] = ['decompress', 'decompress_code', 'compress', 'compress_code']

@@ -174,3 +174,5 @@ if __name__ == "__main__":
     )
     assert aes_ctr(key, iv, left) == right
     assert aes_ctr(key, iv, right) == left
+
+__all__: list[str] = ['aes_ctr']

@@ -477,7 +477,6 @@ def try_find_start_info_no_signature(code: bytes, loadaddress: int, entrypoint: 
         return None
     return srt_valid[0] - loadaddress
 
-
 def get_start_info_offset(code: bytes, loadaddress: int, entrypoint: Optional[int] = None) -> Optional[int]:
     code_start_info_idx = code.find(START_INFO_SIGNATURE_DS)
     if code_start_info_idx != -1:
@@ -486,3 +485,5 @@ def get_start_info_offset(code: bytes, loadaddress: int, entrypoint: Optional[in
     # try to find start info by other means...
     if entrypoint is not None:
         return try_find_start_info_no_signature(code, loadaddress, entrypoint, True)
+
+__all__: list[str] = ['AutoloadSectionInfo', 'CodeStartParams']

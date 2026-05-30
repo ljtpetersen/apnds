@@ -126,4 +126,4 @@ class Narc:
 
         return header + post_header
 
-__all__: list[str] = ["Narc"]
+__all__: list[str] = ['Narc']
