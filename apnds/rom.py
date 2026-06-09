@@ -991,7 +991,6 @@ def construct_fntb(filenames: Iterable[str], file_id_off: int) -> Tuple[bytes, M
         return (*pk[:-1], '\0' + pk[-1])
 
     paths = sorted(map(path_key, filenames), key=path_key_for_sorted)
-    print('\n'.join(path_key_to_path(*pk) for pk in paths))
 
     for pk in paths:
         parent_dir = pk[:-1]
