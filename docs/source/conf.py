@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.abspath('../..'))
 project = 'apnds'
 copyright = '2025–2026, James Petersen'
 author = 'James Petersen'
-release = '0.2.4'
+release = '0.2.5'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
