@@ -465,29 +465,22 @@ class CodeStartParams:
             else:
                 raise ValueError("failed to find code start info")
         else:
-            if self.compressed_end is None:
-                compressed_end = 0
-            else:
-                compressed_end = self.compressed_end
+            compressed_end = self.compressed_end or 0
             code_start_info_idx -= 28
 
         if compressed_end is None:
             pack_into("<5I", code_rw, code_start_info_idx, *self.autoload_sections, self.autoload_start, *self.bss_bounds)
         else:
-            pack_into("<6I", code_rw, code_start_info_idx, *self.autoload_sections, self.autoload_start, *self.bss_bounds, self.compressed_end)
+            pack_into("<6I", code_rw, code_start_info_idx, *self.autoload_sections, self.autoload_start, *self.bss_bounds, compressed_end)
 
         codei_start_info_idx = code.find(START_INFO_SIGNATURE_DSI)
         if codei_start_info_idx == -1:
             if self.dsi_autoload_start is not None or self.dsi_compressed_end is not None or self.dsi_autoload_sections is not None:
                 raise ValueError("DSi code has been packed, but there is no DSi start info structure")
         else:
-            if self.dsi_compressed_end is None:
-                dsi_compressed_end = 0
-            else:
-                dsi_compressed_end = self.dsi_compressed_end
             if self.dsi_autoload_sections is None or self.dsi_autoload_start is None:
                 raise ValueError("DSi structure is present in code but DSi autoload info addresses are None")
-            pack_into("<4I", code_rw, codei_start_info_idx - 16, *self.dsi_autoload_sections, self.dsi_autoload_start, dsi_compressed_end)
+            pack_into("<4I", code_rw, codei_start_info_idx - 16, *self.dsi_autoload_sections, self.dsi_autoload_start, self.dsi_compressed_end or 0)
 
         return bytes(code_rw)
 

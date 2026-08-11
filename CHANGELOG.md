@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.5] - TBD
 ### Changed
 * Optimized `lz.compress_code` slightly.
+### Fixed
+* Failing to pack uncompressed code into structure which allows compression.
 
 ## [0.2.4] - 2026-06-10
 ### Fixed
