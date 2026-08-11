@@ -208,20 +208,23 @@ def compress_code(code: bytes) -> Optional[bytes]:
     def find_best_block(needle: bytes, haystack: bytes) -> Tuple[int, int]:
         if len(needle) < 3:
             return (0, 0)
-        first_bytes = needle[-3:]
+        search_len = 3
         ret_index = ret_len = 0
-        i = haystack.find(first_bytes) + 2
-        while i != 1:
-            l = min(i + 1, len(needle))
-            for j in range(3, l):
-                if needle[-j - 1] != haystack[i - j]:
+        i = haystack.find(needle[-search_len:])
+        while i != -1:
+            k = i + search_len - 1
+            l = min(k + 1, len(needle))
+            for j in range(search_len, l):
+                if needle[-j - 1] != haystack[k - j]:
                     break
             else:
                 j = l
-            if ret_len < j:
-                ret_index = i
-                ret_len = j
-            i = haystack.find(first_bytes, i - 1) + 2
+            ret_index = k
+            ret_len = j
+            search_len = ret_len + 1
+            if search_len > len(needle):
+                break
+            i = haystack.find(needle[-search_len:], i)
         return (ret_len, ret_index)
 
     compressed = bytearray(len(code))
@@ -237,7 +240,7 @@ def compress_code(code: bytes) -> Optional[bytes]:
             flag <<= 1
             if 0 >= src_pos:
                 continue
-            match_len, match_idx = find_best_block(code[max(0, src_pos - 0x12):src_pos], code[src_pos:min(src_pos + 0x1002, len(code))])
+            match_len, match_idx = find_best_block(code[max(0, src_pos - 0x12):src_pos], code[src_pos:src_pos + 0x1002])
             if match_len < 3:
                 if dst_pos < 1:
                     return None
